@@ -1,0 +1,32 @@
+# Every push to main goes live on auto.munne.me. The runner runs on the server itself
+# (labels self-hosted + autotracker), so the server never has to be reachable from outside.
+# The steps are in deploy/deploy.sh; this only brings /srv/auto to the pushed commit.
+
+name: Deploy
+
+on:
+    push:
+        branches: [ main ]
+    workflow_dispatch:
+
+# One deploy at a time; a newer push waits instead of cutting off a deploy halfway.
+concurrency:
+    group: deploy
+    cancel-in-progress: false
+
+jobs:
+    deploy:
+        runs-on: [ self-hosted, autotracker ]
+        timeout-minutes: 90
+        defaults:
+            run:
+                working-directory: /srv/auto
+        steps:
+            - name: Update /srv/auto to ${{ github.sha }}
+              # --ff-only: a change made by hand on the server stops the deploy instead of being lost.
+              run: |
+                  git fetch origin main
+                  git merge --ff-only ${{ github.sha }}
+
+            - name: Deploy
+              run: deploy/deploy.sh
