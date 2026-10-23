@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Gaspedaal\Client;
 use App\Models\Listing;
 use App\Models\Observation;
+use App\Recommend\MatchScorer;
+use App\Recommend\Ranking;
 use App\Recommend\Wensen;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -108,11 +110,17 @@ class ListingController extends Controller
         $others = Listing::whereKey($comparables->pluck('id'))->get()->keyBy('id');
         $wensen = Wensen::get();
 
+        // Through the filters, and its place in "Voor jou", as that list is now.
+        $day = Ranking::day();
+        $cars = $day ? Ranking::cars($day) : [];
+        $car = $cars[$listing->id] ?? null;
+        $rang = $car ? array_search($listing->id, Ranking::rank($cars, $wensen), true) : false;
+
         return [
             'date' => $match->date ?? $deal->date,
-            'door_eisen' => (bool) ($match->door_eisen ?? false),
-            'afgewezen' => json_decode($match->afgewezen ?? '[]', true),
-            'rang' => $match->rang ?? null,
+            'online' => $car !== null,
+            'afgewezen' => $car ? (new MatchScorer($wensen))->rejections($car) : [],
+            'rang' => $rang === false ? null : $rang + 1,
             'cijfer' => $match?->cijfer === null ? null : (float) $match->cijfer,
             'vakken' => $this->vakken($listing, json_decode($match->deelscores ?? 'null', true), $deal, $wensen),
             'deal' => $deal ? [

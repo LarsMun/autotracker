@@ -68,8 +68,8 @@ class MatchScoreTest extends TestCase
 
     public function test_the_grades_of_a_car(): void
     {
-        $scorer = new MatchScorer($this->wensen(['km_max' => 80000, 'bouwjaar_min' => 2022], [
-            'deal' => ['tien' => 10], 'km' => ['tien' => 10000], 'bouwjaar' => ['tien' => 2026], 'vermogen' => ['min' => 150, 'tien' => 200],
+        $scorer = new MatchScorer($this->wensen(vakken: [
+            'deal' => ['tien' => 10], 'km' => ['zes' => 80000, 'tien' => 10000], 'bouwjaar' => ['zes' => 2022, 'tien' => 2026], 'vermogen' => ['zes' => 150, 'tien' => 200],
         ]));
 
         $this->assertSame(
@@ -98,16 +98,46 @@ class MatchScoreTest extends TestCase
         $this->assertNull($scorer->cijfer(['deal' => null, 'km' => null, 'bouwjaar' => null, 'luxe' => 5.0, 'vermogen' => null]));
     }
 
-    public function test_the_filters(): void
+    public function test_no_filter_set_lets_every_car_through(): void
     {
-        $scorer = new MatchScorer($this->wensen(['prijs_min' => 20000, 'prijs_max' => 40000, 'km_max' => 80000, 'bouwjaar_min' => 2022]));
+        $scorer = new MatchScorer($this->wensen());
 
         $this->assertSame([], $scorer->rejections(self::CAR));
-        $this->assertSame([], $scorer->rejections(['prijs' => 40000, 'kilometerstand' => 80000, 'bouwjaar' => 2022] + self::CAR));
+        $this->assertSame([], $scorer->rejections(['prijs' => null, 'kilometerstand' => null, 'bouwjaar' => null, 'pk' => null, 'kleur' => null, 'comfort_niveau' => null] + self::CAR));
+    }
+
+    public function test_price_and_power_ranges(): void
+    {
+        $scorer = new MatchScorer($this->wensen(['prijs_min' => 20000, 'prijs_max' => 40000, 'pk_min' => 150]));
+
+        $this->assertSame([], $scorer->rejections(self::CAR));
+        $this->assertSame([], $scorer->rejections(['prijs' => 40000, 'pk' => 150] + self::CAR));
         $this->assertSame(['prijs buiten je range'], $scorer->rejections(['prijs' => 40001] + self::CAR));
         $this->assertSame(['prijs buiten je range'], $scorer->rejections(['prijs' => 19999] + self::CAR));
-        $this->assertSame(['te veel km', 'te oud'], $scorer->rejections(['kilometerstand' => 80001, 'bouwjaar' => 2021] + self::CAR));
-        $this->assertSame(['prijs buiten je range', 'te veel km', 'te oud'], $scorer->rejections(['prijs' => null, 'kilometerstand' => null, 'bouwjaar' => null] + self::CAR));
+        $this->assertSame(['vermogen buiten je range'], $scorer->rejections(['pk' => 149] + self::CAR));
+        // A bound is set: an unknown value does not pass it.
+        $this->assertSame(['prijs buiten je range', 'vermogen buiten je range'], $scorer->rejections(['prijs' => null, 'pk' => null] + self::CAR));
+
+        // Only an upper bound.
+        $this->assertSame(['prijs buiten je range'], (new MatchScorer($this->wensen(['prijs_max' => 30000])))->rejections(self::CAR));
+        $this->assertSame([], (new MatchScorer($this->wensen(['pk_max' => 200])))->rejections(self::CAR));
+    }
+
+    public function test_years_km_steps_and_comfort_levels(): void
+    {
+        $scorer = new MatchScorer($this->wensen(['bouwjaren' => [2023, 2025], 'km' => [20000, 50000], 'luxe' => [2, 3]]));
+
+        $this->assertSame([], $scorer->rejections(self::CAR));
+        $this->assertSame(['ander bouwjaar'], $scorer->rejections(['bouwjaar' => 2024] + self::CAR));
+        // 20000 is the step of 20.000–29.999 km.
+        $this->assertSame([], $scorer->rejections(['kilometerstand' => 20000] + self::CAR));
+        $this->assertSame([], $scorer->rejections(['kilometerstand' => 29999] + self::CAR));
+        $this->assertSame(['andere kilometerstand'], $scorer->rejections(['kilometerstand' => 30000] + self::CAR));
+        $this->assertSame(['andere kilometerstand'], $scorer->rejections(['kilometerstand' => null] + self::CAR));
+        $this->assertSame(['ander uitrustingsniveau'], $scorer->rejections(['comfort_niveau' => 1] + self::CAR));
+
+        $this->assertSame(20000, MatchScorer::kmStep(27500));
+        $this->assertSame(0, MatchScorer::kmStep(9999));
     }
 
     public function test_make_and_model(): void
@@ -141,10 +171,10 @@ class MatchScoreTest extends TestCase
 
     public function test_sport_and_brand_dealer(): void
     {
-        $this->assertSame(['niet sportief'], (new MatchScorer($this->wensen(['sport' => 'ja'])))->rejections(self::CAR));
-        $this->assertSame([], (new MatchScorer($this->wensen(['sport' => 'ja'])))->rejections(['sport' => true] + self::CAR));
-        $this->assertSame(['sportief'], (new MatchScorer($this->wensen(['sport' => 'nee'])))->rejections(['sport' => true] + self::CAR));
-        $this->assertSame([], (new MatchScorer($this->wensen(['sport' => 'maakt_niet_uit'])))->rejections(['sport' => true] + self::CAR));
+        $sport = new MatchScorer($this->wensen(['sport' => true]));
+        $this->assertSame(['niet sportief'], $sport->rejections(self::CAR));
+        $this->assertSame([], $sport->rejections(['sport' => true] + self::CAR));
+        $this->assertSame([], (new MatchScorer($this->wensen(['sport' => false])))->rejections(['sport' => true] + self::CAR));
 
         $dealer = new MatchScorer($this->wensen(['alleen_merkdealer' => true]));
         $this->assertSame(['geen merkdealer of merkgarantie'], $dealer->rejections(self::CAR));
@@ -167,16 +197,23 @@ class MatchScoreTest extends TestCase
         ];
         $new = Wensen::upgrade($v3, fn () => ['BLAUW', 'GRIJS', 'WIT', 'ZWART']);
 
+        $next = (int) date('Y') + 1;
         $this->assertSame([
-            'prijs_min' => 0, 'prijs_max' => 45000, 'km_max' => 70000, 'bouwjaar_min' => 2022,
             // The excluded Picanto's make is left out; the others keep all their models.
             'merken' => ['Audi', 'BMW', 'Volvo'], 'modellen' => [],
+            'prijs_min' => null, 'prijs_max' => 45000,
+            // From the minimum year up to next year's models, and every step of 10.000 km below the maximum.
+            'bouwjaren' => range(2022, $next), 'km' => [0, 10000, 20000, 30000, 40000, 50000, 60000],
+            'luxe' => [], 'sport' => true, 'pk_min' => null, 'pk_max' => null,
             // "Not white" is every other colour.
             'kleuren' => ['BLAUW', 'GRIJS', 'ZWART'], 'onbekende_kleur' => true,
-            'sport' => 'ja', 'alleen_merkdealer' => true,
+            'alleen_merkdealer' => true,
         ], $new['filters']);
         $this->assertSame(['deal' => 5, 'km' => 3, 'bouwjaar' => 3, 'luxe' => 5, 'vermogen' => 3], Wensen::weights($new));
-        $this->assertSame(['belang' => 3, 'min' => 175, 'tien' => 225], $new['vakken']['vermogen']);
+        // The old limits are the 6 of their vakken.
+        $this->assertSame(['belang' => 3, 'zes' => 70000, 'tien' => 10000], $new['vakken']['km']);
+        $this->assertSame(['belang' => 3, 'zes' => 2022, 'tien' => (int) date('Y')], $new['vakken']['bouwjaar']);
+        $this->assertSame(['belang' => 3, 'zes' => 175, 'tien' => 225], $new['vakken']['vermogen']);
         $this->assertSame(Wensen::VERSIE, $new['versie']);
         // Already converted: left alone.
         $this->assertSame($new, Wensen::upgrade($new, fn () => []));
@@ -194,12 +231,14 @@ class MatchScoreTest extends TestCase
             'w' => 1.0,
         ], $none);
 
-        $this->assertSame(88000, $new['filters']['km_max']);
-        $this->assertSame(2021, $new['filters']['bouwjaar_min']);
+        $this->assertSame(88000, $new['vakken']['km']['zes']);
+        $this->assertSame(range(0, 80000, 10000), $new['filters']['km']);
+        $this->assertSame(2021, $new['vakken']['bouwjaar']['zes']);
+        $this->assertSame(2021, $new['filters']['bouwjaren'][0]);
         $this->assertSame(['BMW', 'Volvo'], $new['filters']['merken']);
         $this->assertSame(['BMW|3-serie', 'BMW|5-serie'], $new['filters']['modellen']);
         // A sport wish that did not count is no filter; deal only by match share 1.
-        $this->assertSame('maakt_niet_uit', $new['filters']['sport']);
+        $this->assertFalse($new['filters']['sport']);
         $this->assertSame(['deal' => 0, 'km' => 3, 'bouwjaar' => 3, 'luxe' => 1, 'vermogen' => 3], Wensen::weights($new));
 
         // Nothing excluded: every make.

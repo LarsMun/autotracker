@@ -48,7 +48,12 @@ class Listing extends Model
     /** pk = kW × 1,36 */
     public function pk(): ?int
     {
-        return $this->vermogen_kw ? (int) round($this->vermogen_kw * 1.36) : null;
+        return self::pkFrom($this->vermogen_kw);
+    }
+
+    public static function pkFrom(int|float|string|null $kw): ?int
+    {
+        return $kw ? (int) round($kw * 1.36) : null;
     }
 
     /** The local copy when there is one, else Gaspedaal's CDN, unless that refused it. */

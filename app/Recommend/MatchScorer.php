@@ -7,14 +7,16 @@ namespace App\Recommend;
  * from 1 to 10, averaged with the vakken's importance.
  *
  * Every vak grades on one straight line through two anchor points, a 6 and a 10, kept within 1–10.
- * For km and bouwjaar the 6 is the filter limit, so a car on the limit is "net voldoende".
+ * The grades do not depend on the filters, so the filters can change without computing again.
  */
 final class MatchScorer
 {
     public function __construct(private array $wensen) {}
 
     /**
-     * The reasons the car falls out; empty when it passes every filter.
+     * The reasons the car falls out of the filters; empty when it passes every one. An empty list
+     * or a bound that is not set lets every car through; a filter that is set lets no car through
+     * whose value is unknown, except colour with onbekende_kleur.
      *
      * @return list<string>
      */
@@ -22,34 +24,43 @@ final class MatchScorer
     {
         $f = $this->wensen['filters'];
         $reasons = [];
-
-        if ($car['prijs'] === null || $car['prijs'] < $f['prijs_min'] || $car['prijs'] > $f['prijs_max']) {
-            $reasons[] = 'prijs buiten je range';
-        }
-
-        if ($car['kilometerstand'] === null || $car['kilometerstand'] > $f['km_max']) {
-            $reasons[] = 'te veel km';
-        }
-
-        if ($car['bouwjaar'] === null || $car['bouwjaar'] < $f['bouwjaar_min']) {
-            $reasons[] = 'te oud';
-        }
+        $outside = fn (?int $value, ?int $min, ?int $max) => ($min !== null || $max !== null)
+            && ($value === null || ($min !== null && $value < $min) || ($max !== null && $value > $max));
 
         if ($f['merken'] !== [] && ! in_array($car['merk'], $f['merken'], true)) {
             $reasons[] = 'ander merk';
         } elseif (self::modelsOf($car['merk'], $f['modellen']) !== [] && ! in_array("{$car['merk']}|{$car['model']}", $f['modellen'], true)) {
-            // A chosen make without chosen models: all its models pass.
             $reasons[] = 'ander model';
+        }
+
+        if ($outside($car['prijs'], $f['prijs_min'], $f['prijs_max'])) {
+            $reasons[] = 'prijs buiten je range';
+        }
+
+        if ($f['bouwjaren'] !== [] && ! in_array($car['bouwjaar'], $f['bouwjaren'], true)) {
+            $reasons[] = 'ander bouwjaar';
+        }
+
+        if ($f['km'] !== [] && ($car['kilometerstand'] === null || ! in_array(self::kmStep($car['kilometerstand']), $f['km'], true))) {
+            $reasons[] = 'andere kilometerstand';
+        }
+
+        if ($f['luxe'] !== [] && ! in_array($car['comfort_niveau'] ?? null, $f['luxe'], true)) {
+            $reasons[] = 'ander uitrustingsniveau';
+        }
+
+        if ($f['sport'] && ! ($car['sport'] ?? false)) {
+            $reasons[] = 'niet sportief';
+        }
+
+        if ($outside($car['pk'] ?? null, $f['pk_min'], $f['pk_max'])) {
+            $reasons[] = 'vermogen buiten je range';
         }
 
         $colour = $car['kleur'] ?? null;
 
         if ($f['kleuren'] !== [] && ($colour === null ? ! $f['onbekende_kleur'] : ! in_array($colour, $f['kleuren'], true))) {
             $reasons[] = $colour === null ? 'kleur onbekend' : 'andere kleur';
-        }
-
-        if ($f['sport'] !== 'maakt_niet_uit' && (bool) ($car['sport'] ?? false) !== ($f['sport'] === 'ja')) {
-            $reasons[] = $f['sport'] === 'ja' ? 'niet sportief' : 'sportief';
         }
 
         if ($f['alleen_merkdealer'] && ! self::isBrandDealer($car)) {
@@ -66,14 +77,13 @@ final class MatchScorer
     public function grades(array $car, ?array $deal): array
     {
         $v = $this->wensen['vakken'];
-        $f = $this->wensen['filters'];
 
         return [
             'deal' => self::deal($deal['deal_pct'] ?? null, (bool) ($deal['check_dit'] ?? false), (float) $v['deal']['tien']),
-            'km' => $car['kilometerstand'] === null ? null : self::line($car['kilometerstand'], $f['km_max'], $v['km']['tien']),
-            'bouwjaar' => $car['bouwjaar'] === null ? null : self::line($car['bouwjaar'], $f['bouwjaar_min'], $v['bouwjaar']['tien']),
+            'km' => $car['kilometerstand'] === null ? null : self::line($car['kilometerstand'], $v['km']['zes'], $v['km']['tien']),
+            'bouwjaar' => $car['bouwjaar'] === null ? null : self::line($car['bouwjaar'], $v['bouwjaar']['zes'], $v['bouwjaar']['tien']),
             'luxe' => self::luxe($car['comfort_niveau'] ?? null, $car['uitvoeringslijn'] ?? null),
-            'vermogen' => ($car['pk'] ?? null) === null ? null : self::line($car['pk'], $v['vermogen']['min'], $v['vermogen']['tien']),
+            'vermogen' => ($car['pk'] ?? null) === null ? null : self::line($car['pk'], $v['vermogen']['zes'], $v['vermogen']['tien']),
         ];
     }
 
@@ -123,6 +133,12 @@ final class MatchScorer
         }
 
         return round(max(1, min(10, 6 + 4 * ($value - $six) / ($ten - $six))), 1);
+    }
+
+    /** 27.500 km → 20000, the start of its step in the km filter. */
+    public static function kmStep(int $km): int
+    {
+        return intdiv($km, Wensen::KM_STAP) * Wensen::KM_STAP;
     }
 
     /**

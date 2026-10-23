@@ -24,8 +24,6 @@ export const vakOnbekend = {
 // Weight per importance button.
 export const belangLabel = { 0: 'Niet', 1: 'Beetje', 3: 'Belangrijk', 5: 'Heel belangrijk' }
 
-export const sportLabel = { maakt_niet_uit: 'Maakt niet uit', ja: 'Alleen sportief', nee: 'Niet sportief' }
-
 export const verruimingLabel = [
     'strikt (bouwjaar ±1, km ±15.000, pk ±15%, comfort ±1)',
     'bouwjaar ±2',

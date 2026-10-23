@@ -110,8 +110,11 @@ const specs = computed(() => [
                 <p class="text-xs text-stone-500">Berekend op {{ date(score.date) }} · <Link href="/wensen" class="text-teal-700 hover:underline">mijn wensen</Link></p>
             </div>
 
-            <div v-if="!score.door_eisen" class="mt-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700">
-                Komt niet door je filters: {{ score.afgewezen.join(', ') }}. Hieronder het cijfer zoals het zou zijn.
+            <div v-if="score.afgewezen.length" class="mt-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700">
+                Komt niet door je filters bij "Voor jou": {{ score.afgewezen.join(', ') }}.
+            </div>
+            <div v-else-if="!score.online" class="mt-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700">
+                Niet meer online; dit is het laatste cijfer dat hij kreeg.
             </div>
 
             <div class="mt-4 flex items-center gap-4">

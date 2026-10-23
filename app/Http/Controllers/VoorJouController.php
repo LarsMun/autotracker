@@ -4,200 +4,114 @@ namespace App\Http\Controllers;
 
 use App\Jobs\RecomputeMatches;
 use App\Models\Listing;
+use App\Recommend\Ranking;
 use App\Recommend\Reasons;
 use App\Recommend\Wensen;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class VoorJouController extends Controller
 {
-    public const int TOP = 10;
+    public const int PER_PAGE = 50;
 
-    /** The last chosen make and model filter, in the settings table. */
-    public const string FILTERS_KEY = 'voor_jou_filters';
-
-    public function index(Request $request): Response|RedirectResponse
+    public function index(Request $request): Response
     {
-        // Without merk or model in the URL: the last chosen ones. "?merk=" means no filter.
-        if (! $request->has('merk') && ! $request->has('model')) {
-            $saved = self::filtersFrom(json_decode((string) DB::table('settings')->where('key', self::FILTERS_KEY)->value('value'), true) ?? []);
-
-            if ($saved['merk'] !== '') {
-                return redirect()->route('voor-jou', array_filter($saved) + $request->only('page'));
-            }
-        }
-
-        $filters = self::filtersFrom($request->query());
-        $this->remember($filters);
-
-        $day = DB::table('match_scores')->max('date');
+        $day = Ranking::day();
         $wensen = Wensen::get();
+        $cars = $day ? Ranking::cars($day) : [];
+        $ids = Ranking::rank($cars, $wensen);
 
-        if ($day === null) {
-            return Inertia::render('VoorJou/Index', ['day' => null, 'ranking' => null, 'top' => null, 'gewichten' => Wensen::weights($wensen), 'filters' => $filters, 'options' => [], 'bijwerken' => RecomputeMatches::pending()]);
-        }
+        $page = LengthAwarePaginator::resolveCurrentPage();
+        $pageIds = array_slice($ids, ($page - 1) * self::PER_PAGE, self::PER_PAGE);
+        $listings = Listing::whereKey($pageIds)->get()->keyBy('id');
+        $first = ($page - 1) * self::PER_PAGE;
 
-        $merken = array_filter(explode(',', $filters['merk']));
-        $modellen = collect(array_filter(explode(',', $filters['model'])))
-            ->map(fn ($m) => explode('|', $m, 2))->groupBy(0)->map(fn ($pairs) => $pairs->pluck(1)->all());
-
-        $ranking = DB::table('match_scores as m')
-            ->join('listings as l', 'l.id', '=', 'm.listing_id')
-            ->leftJoin('deal_scores as d', fn ($j) => $j->on('d.listing_id', '=', 'm.listing_id')->on('d.date', '=', 'm.date'))
-            ->where('m.date', $day)->where('m.door_eisen', true)
-            // A make without chosen models: all its models.
-            ->when($merken, fn ($q) => $q->where(function ($q) use ($merken, $modellen) {
-                foreach ($merken as $merk) {
-                    $q->orWhere(fn ($q) => $q->where('l.merk', $merk)
-                        ->when($modellen[$merk] ?? null, fn ($q, $models) => $q->whereIn('l.model', $models)));
-                }
-            }))
-            ->orderBy('m.rang')
-            ->select(['m.*', 'd.verwachte_prijs', 'd.deal_eur', 'd.deal_pct', 'd.vergelijkbaar_n', 'd.check_dit', 'd.onbetrouwbaar'])
-            ->paginate(50)->withQueryString();
-
-        $listings = Listing::whereKey($ranking->pluck('listing_id'))->get()->keyBy('id');
-        // The place within the filtered list; rang stays the place in the whole ranking.
-        $plek = ($ranking->firstItem() ?? 1) - 1;
-        $ranking->through(function ($row) use (&$plek, $listings, $wensen) {
-            return ['plek' => ++$plek] + $this->row($row, $listings[$row->listing_id]);
-        });
+        $rows = array_map(fn ($id, $i) => $this->row($first + $i + 1, $cars[$id], $listings[$id]), $pageIds, array_keys($pageIds));
+        $ranking = (new LengthAwarePaginator($rows, count($ids), self::PER_PAGE, $page))->withPath($request->url());
 
         return Inertia::render('VoorJou/Index', [
             'day' => $day,
             'ranking' => $ranking,
-            'top' => $this->topChanges($day),
             'gewichten' => Wensen::weights($wensen),
-            'filters' => $filters,
-            'options' => $this->options($day),
+            'filters' => $wensen['filters'],
+            'standaard' => Wensen::defaults()['filters'],
+            'options' => Ranking::options($cars),
             'bijwerken' => RecomputeMatches::pending(),
         ]);
     }
 
     /**
-     * Makes as "BMW,Volvo" and models as "Volvo|V60,BMW|X3"; a model only counts with its make chosen.
-     *
-     * @return array{merk: string, model: string}
+     * New filters: stored with the wensen, the list follows at once.
      */
-    public static function filtersFrom(array $input): array
+    public function filters(Request $request): RedirectResponse
     {
-        $list = fn ($value) => collect(is_array($value) ? $value : explode(',', (string) $value))
-            ->map(fn ($v) => trim((string) $v))->filter()->unique()->sort()->values();
+        Wensen::saveFilters(self::filtersFrom($request));
 
-        $merken = $list($input['merk'] ?? '')->map(fn ($m) => mb_substr($m, 0, 100));
-        $modellen = $list($input['model'] ?? '')
-            ->filter(fn ($m) => str_contains($m, '|') && $merken->contains(explode('|', $m, 2)[0]));
-
-        return ['merk' => $merken->implode(','), 'model' => $modellen->implode(',')];
+        return redirect()->route('voor-jou');
     }
 
-    private function remember(array $filters): void
+    public static function filtersFrom(Request $request): array
     {
-        $now = now();
+        $data = $request->validate([
+            'merken' => ['array'],
+            'merken.*' => ['string', 'max:100'],
+            'modellen' => ['array'],
+            'modellen.*' => ['string', 'max:200'],
+            'prijs_min' => ['nullable', 'integer', 'min:0'],
+            'prijs_max' => ['nullable', 'integer', 'min:0'],
+            'bouwjaren' => ['array'],
+            'bouwjaren.*' => ['integer', 'between:1900,2100'],
+            'km' => ['array'],
+            'km.*' => ['integer', 'min:0', 'multiple_of:'.Wensen::KM_STAP],
+            'luxe' => ['array'],
+            'luxe.*' => ['integer', 'between:1,3'],
+            'sport' => ['boolean'],
+            'pk_min' => ['nullable', 'integer', 'min:0'],
+            'pk_max' => ['nullable', 'integer', 'min:0'],
+            'kleuren' => ['array'],
+            'kleuren.*' => ['string', 'max:50'],
+            'onbekende_kleur' => ['boolean'],
+            'alleen_merkdealer' => ['boolean'],
+        ]);
 
-        DB::table('settings')->upsert(
-            [['key' => self::FILTERS_KEY, 'value' => json_encode($filters), 'created_at' => $now, 'updated_at' => $now]],
-            ['key'],
-            ['value', 'updated_at'],
-        );
+        $list = fn (string $key, bool $int = false) => collect($data[$key] ?? [])->map(fn ($v) => $int ? (int) $v : (string) $v)->unique()->sort()->values()->all();
+        $bound = fn (string $key) => isset($data[$key]) ? (int) $data[$key] : null;
+        $merken = $list('merken');
+
+        return [
+            'merken' => $merken,
+            // A model counts only with its make chosen.
+            'modellen' => array_values(array_filter($list('modellen'), fn ($m) => str_contains($m, '|') && in_array(explode('|', $m, 2)[0], $merken, true))),
+            'prijs_min' => $bound('prijs_min'),
+            'prijs_max' => $bound('prijs_max'),
+            'bouwjaren' => $list('bouwjaren', true),
+            'km' => $list('km', true),
+            'luxe' => $list('luxe', true),
+            'sport' => (bool) ($data['sport'] ?? false),
+            'pk_min' => $bound('pk_min'),
+            'pk_max' => $bound('pk_max'),
+            'kleuren' => $list('kleuren'),
+            'onbekende_kleur' => (bool) ($data['onbekende_kleur'] ?? true),
+            'alleen_merkdealer' => (bool) ($data['alleen_merkdealer'] ?? false),
+        ];
     }
 
-    /**
-     * The makes and models in today's ranking, with how many cars each.
-     */
-    private function options(string $day): array
+    private function row(int $rang, array $car, Listing $listing): array
     {
-        return DB::table('match_scores as m')
-            ->join('listings as l', 'l.id', '=', 'm.listing_id')
-            ->where('m.date', $day)->where('m.door_eisen', true)->whereNotNull('l.merk')
-            ->groupBy('l.merk', 'l.model')->orderBy('l.merk')->orderBy('l.model')
-            ->selectRaw('l.merk, l.model, count(*) as n')
-            ->get()->groupBy('merk')
-            ->map(fn ($rows, $merk) => [
-                'merk' => $merk,
-                'n' => (int) $rows->sum('n'),
-                'modellen' => $rows->whereNotNull('model')->map(fn ($r) => ['model' => $r->model, 'n' => (int) $r->n])->values()->all(),
-            ])->values()->all();
-    }
-
-    private function row(object $m, Listing $listing): array
-    {
-        $car = $listing->summary() + [
+        $summary = $listing->summary() + [
             'online_sinds' => $listing->online_sinds?->toDateString(),
             'online_sinds_bron' => $listing->online_sinds_bron,
-            'garantie' => $listing->garantie,
-            'aanbieder_type' => $listing->aanbieder_type,
-        ];
-        $deal = $m->verwachte_prijs === null && $m->vergelijkbaar_n === null ? null : (object) [
-            'verwachte_prijs' => $m->verwachte_prijs,
-            'deal_eur' => $m->deal_eur,
-            'deal_pct' => $m->deal_pct,
-            'vergelijkbaar_n' => $m->vergelijkbaar_n,
-            'check_dit' => (bool) $m->check_dit,
-            'onbetrouwbaar' => (bool) $m->onbetrouwbaar,
         ];
 
         return [
-            'rang' => $m->rang,
-            'cijfer' => $m->cijfer === null ? null : (float) $m->cijfer,
-            'cijfers' => json_decode($m->deelscores ?? '{}', true),
-            'chips' => Reasons::chips($car, $deal),
-            'car' => $car,
-        ];
-    }
-
-    /**
-     * Today's top 10 against the day before, and since when each car is in it.
-     */
-    private function topChanges(string $day): array
-    {
-        $dates = DB::table('match_scores')->where('date', '<=', $day)->distinct()->orderByDesc('date')->limit(366)->pluck('date')->all();
-        $previous = $dates[1] ?? null;
-
-        $topOn = fn (?string $date) => $date === null ? [] : DB::table('match_scores')
-            ->where('date', $date)->whereNotNull('rang')->where('rang', '<=', self::TOP)
-            ->pluck('rang', 'listing_id')->all();
-
-        $today = $topOn($day);
-        $before = $topOn($previous);
-
-        // Consecutive days in the top 10, walking back from today.
-        $history = DB::table('match_scores')->whereIn('listing_id', array_keys($today))->whereIn('date', $dates)
-            ->whereNotNull('rang')->where('rang', '<=', self::TOP)
-            ->get(['listing_id', 'date'])->groupBy('listing_id')->map(fn ($rows) => $rows->pluck('date')->flip());
-
-        $since = [];
-
-        foreach (array_keys($today) as $id) {
-            $first = $day;
-
-            foreach ($dates as $date) {
-                if (! isset($history[$id][$date])) {
-                    break;
-                }
-
-                $first = $date;
-            }
-
-            $since[$id] = $first;
-        }
-
-        $describe = fn (array $ids, array $ranks) => Listing::whereKey($ids)->get()
-            ->map(fn (Listing $l) => ['id' => $l->id, 'title' => $l->title(), 'prijs' => $l->prijs, 'rang' => $ranks[$l->id] ?? null])
-            ->sortBy('rang')->values();
-
-        $out = array_diff_key($before, $today);
-        $nowRanks = DB::table('match_scores')->where('date', $day)->whereIn('listing_id', array_keys($out))->pluck('rang', 'listing_id')->all();
-
-        return [
-            'vorige_dag' => $previous,
-            'sinds' => $since,
-            'nieuw' => $previous ? $describe(array_keys(array_diff_key($today, $before)), $today) : [],
-            // Where they are now: a lower rank, or none (sold, or no longer meeting the requirements).
-            'eruit' => $describe(array_keys($out), $nowRanks)->map(fn ($c) => $c + ['vorige_rang' => $before[$c['id']]])->values(),
+            'rang' => $rang,
+            'cijfer' => $car['cijfer'],
+            'cijfers' => $car['cijfers'],
+            'chips' => Reasons::chips($summary, $car['deal']),
+            'car' => $summary,
         ];
     }
 }

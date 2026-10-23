@@ -82,21 +82,45 @@ class RecommendationTest extends TestCase
         return $response;
     }
 
+    /** The listing ids "Voor jou" shows, in order, over every page. */
+    private function list(): array
+    {
+        $ids = [];
+
+        for ($page = 1; ; $page++) {
+            $ranking = $this->get("/voor-jou?page={$page}")->viewData('page')['props']['ranking'];
+            $ids = [...$ids, ...array_column(array_column($ranking['data'], 'car'), 'id')];
+
+            if ($page >= $ranking['last_page']) {
+                return $ids;
+            }
+        }
+    }
+
+    private function filters(array $filters): TestResponse
+    {
+        return $this->put('/voor-jou/filters', $filters + Wensen::defaults()['filters']);
+    }
+
     public function test_the_nightly_scores_and_the_voor_jou_page(): void
     {
         $this->day();
 
         $this->assertSame(1, DB::table('model_factors')->where('scope', 'model')->count());
         $this->assertSame(20, DB::table('deal_scores')->where('date', '2026-10-16')->whereNotNull('verwachte_prijs')->count());
-        $this->assertSame(20, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
-        $this->assertSame(range(1, 20), DB::table('match_scores')->where('date', '2026-10-16')->orderBy('rang')->pluck('rang')->all());
+        $this->assertSame(20, DB::table('match_scores')->where('date', '2026-10-16')->whereNotNull('cijfer')->count());
 
         $this->get('/voor-jou')->assertOk()->assertInertia(fn ($page) => $page->component('VoorJou/Index')
             ->where('day', '2026-10-16')
             ->where('ranking.total', 20)
             ->where('ranking.data.0.rang', 1)
-            ->where('top.vorige_dag', null)
-            ->has('ranking.data.0.chips'));
+            ->where('ranking.data.1.rang', 2)
+            ->where('ranking.data.0.cijfer', fn ($c) => $c >= 1 && $c <= 10)
+            ->has('ranking.data.0.cijfers', 5)
+            ->has('ranking.data.0.chips')
+            ->where('options.merken.0.merk', 'Volvo')
+            ->has('options.bouwjaren', 4)
+            ->where('filters.merken', []));
 
         // Day two: car 3 drops €4.000 and becomes a good deal, not yet a "Check dit".
         $this->travel(1)->day();
@@ -105,20 +129,13 @@ class RecommendationTest extends TestCase
         $car3 = Listing::where('advertentie_id', 3)->first();
         $deal = DB::table('deal_scores')->where('listing_id', $car3->id)->where('date', '2026-10-17')->first();
         $this->assertGreaterThan(5, (float) $deal->deal_pct);
-
-        $response = $this->get('/voor-jou')->assertOk();
-        $top = $response->viewData('page')['props']['top'];
-        $this->assertSame('2026-10-16', $top['vorige_dag']);
-        $rank3 = DB::table('match_scores')->where('listing_id', $car3->id)->where('date', '2026-10-17')->value('rang');
-        $this->assertLessThanOrEqual(10, $rank3);
-
-        // Every car that is in today's top 10 has a "since" date, and new and dropped ones balance out.
-        $this->assertCount(10, $top['sinds']);
-        $this->assertSame(count($top['nieuw']), count($top['eruit']));
+        $this->assertLessThan(10, array_search($car3->id, $this->list(), true));
 
         // The detail page explains it.
         $this->get("/listings/{$car3->id}")->assertOk()->assertInertia(fn ($page) => $page
-            ->where('score.door_eisen', true)
+            ->where('score.afgewezen', [])
+            ->where('score.online', true)
+            ->where('score.rang', array_search($car3->id, $this->list(), true) + 1)
             ->where('score.cijfer', fn ($c) => $c >= 1 && $c <= 10)
             ->where('score.deal.verwachte_prijs', $deal->verwachte_prijs)
             ->where('score.vakken.0.vak', 'deal')
@@ -127,94 +144,60 @@ class RecommendationTest extends TestCase
             ->has('score.vergelijkbaar'));
     }
 
-    public function test_the_make_and_model_filter_keeps_the_ranking(): void
+    public function test_the_filters_narrow_the_list_at_once(): void
     {
         $this->day();
+        $all = $this->list();
 
         // Five of the V60s become XC60s, a model of the same make.
-        $xc60 = Listing::orderBy('id')->limit(5)->pluck('id');
+        $xc60 = Listing::orderBy('id')->limit(5)->pluck('id')->all();
         Listing::whereKey($xc60)->update(['model' => 'XC60']);
 
-        $this->get('/voor-jou?merk=Volvo&model=Volvo|XC60')->assertOk()->assertInertia(fn ($page) => $page
-            ->where('filters', ['merk' => 'Volvo', 'model' => 'Volvo|XC60'])
-            ->where('ranking.total', 5)
-            ->where('options.0.merk', 'Volvo')
-            ->has('options.0.modellen', 2));
+        // Nothing queued: the cijfers stay, only the list changes.
+        $this->filters(['merken' => ['Volvo'], 'modellen' => ['Volvo|XC60']])->assertRedirect('/voor-jou');
+        Queue::assertNotPushed(RecomputeMatches::class);
+        $this->assertSame(['Volvo|XC60'], Wensen::get()['filters']['modellen']);
+        $this->assertSame(array_values(array_intersect($all, $xc60)), $this->list());
+        $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('ranking.total', 5)->where('ranking.data.0.rang', 1)->has('options.merken.0.modellen', 2));
 
-        $rows = $this->get('/voor-jou?merk=Volvo&model=Volvo|XC60')->viewData('page')['props']['ranking']['data'];
-        $this->assertSame([1, 2, 3, 4, 5], array_column($rows, 'plek'));
-        $expected = DB::table('match_scores')->where('date', '2026-10-16')->whereIn('listing_id', $xc60)->orderBy('rang')->pluck('rang')->all();
-        $this->assertSame($expected, array_column($rows, 'rang'));
+        // A model without its make is dropped; another make leaves nothing.
+        $this->filters(['merken' => ['BMW'], 'modellen' => ['Volvo|V60']]);
+        $this->assertSame([], Wensen::get()['filters']['modellen']);
+        $this->assertSame([], $this->list());
 
-        // Remembered: without filters in the URL, back to the last ones.
-        $this->get('/voor-jou')->assertRedirect('/voor-jou?merk=Volvo&model=Volvo%7CXC60');
-        // An empty merk clears it; a model without its make is dropped.
-        $this->get('/voor-jou?merk=&model=Volvo|XC60')->assertOk()->assertInertia(fn ($page) => $page
-            ->where('filters', ['merk' => '', 'model' => ''])
-            ->where('ranking.total', 20)
-            ->where('ranking.data.0.plek', 1));
-        $this->get('/voor-jou')->assertOk();
-
-        // Several makes; one with no cars in the ranking leaves the rest.
-        $this->get('/voor-jou?merk=BMW,Volvo')->assertInertia(fn ($page) => $page->where('filters.merk', 'BMW,Volvo')->where('ranking.total', 20));
-    }
-
-    public function test_saving_the_wensen_recomputes_the_ranking(): void
-    {
-        $this->day();
-
-        $this->get('/wensen')->assertOk()->assertInertia(fn ($page) => $page->component('Wensen/Edit')
-            ->where('wensen.filters.prijs_max', 40000)
-            ->where('merken.0.merk', 'Volvo')
-            ->has('merken.0.modellen', 1));
-
-        $wensen = Wensen::defaults();
-        $wensen['filters']['prijs_max'] = 30000;
-
-        $this->saveWensen($wensen)->assertRedirect('/voor-jou');
-
-        $this->assertSame(30000, Wensen::get()['filters']['prijs_max']);
-        $passing = DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count();
-        $this->assertSame(Listing::where('prijs', '<=', 30000)->count(), $passing);
-        $this->assertGreaterThan(0, $passing);
-        $this->assertLessThan(20, $passing);
-        $this->assertSame(['prijs buiten je range'], json_decode(DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', false)->value('afgewezen'), true));
+        // Price range, years, steps of km and comfort levels.
+        $this->filters(['prijs_max' => 30000]);
+        $this->assertSame(Listing::where('prijs', '<=', 30000)->orderBy('id')->pluck('id')->all(), collect($this->list())->sort()->values()->all());
+        $this->filters(['bouwjaren' => [2024, 2025]]);
+        $this->assertSame(Listing::whereIn('bouwjaar', [2024, 2025])->count(), count($this->list()));
+        $this->filters(['km' => [10000, 20000]]);
+        $this->assertSame(Listing::whereBetween('kilometerstand', [10000, 29999])->count(), count($this->list()));
+        $this->filters(['luxe' => [2]]);
+        $this->assertSame(Listing::where('comfort_niveau', 2)->count(), count($this->list()));
 
         // Colours: FakeGaspedaal's cars are GRIJS.
-        $wensen['filters']['prijs_max'] = 40000;
-        $wensen['filters']['kleuren'] = ['ZWART'];
-        $this->saveWensen($wensen);
-        $this->assertSame(0, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
-        $wensen['filters']['kleuren'] = ['ZWART', 'GRIJS'];
-        $this->saveWensen($wensen);
-        $this->assertSame(20, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
-        $this->get('/wensen')->assertInertia(fn ($page) => $page->where('kleuren.0.kleur', 'GRIJS'));
+        $this->filters(['kleuren' => ['ZWART']]);
+        $this->assertSame([], $this->list());
+        $this->filters(['kleuren' => ['ZWART', 'GRIJS']]);
+        $this->assertCount(20, $this->list());
 
-        // Another make, or another model of this one, leaves nothing; a model without its make is dropped.
-        $wensen['filters']['merken'] = ['BMW'];
-        $wensen['filters']['modellen'] = ['Volvo|V60'];
-        $this->saveWensen($wensen);
-        $this->assertSame([], Wensen::get()['filters']['modellen']);
-        $this->assertSame(0, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
-        $wensen['filters']['merken'] = ['Volvo'];
-        $wensen['filters']['modellen'] = ['Volvo|XC60'];
-        $this->saveWensen($wensen);
-        $this->assertSame(0, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
-        $wensen['filters']['modellen'] = ['Volvo|V60'];
-        $this->saveWensen($wensen);
-        $this->assertSame(20, DB::table('match_scores')->where('date', '2026-10-16')->where('door_eisen', true)->count());
+        // Only steps of 10.000 km.
+        $this->filters(['km' => [15000]])->assertSessionHasErrors('km.0');
+
+        // Cleared: every car, in the same order as before.
+        $this->filters([]);
+        $this->assertSame($all, $this->list());
     }
 
-    public function test_the_ranking_is_by_cijfer_then_price(): void
+    public function test_the_list_is_by_cijfer_then_price(): void
     {
         $this->day();
 
-        $rows = DB::table('match_scores as m')->join('listings as l', 'l.id', '=', 'm.listing_id')
-            ->where('m.date', '2026-10-16')->orderBy('m.rang')->get(['m.cijfer', 'l.prijs'])
-            ->map(fn ($r) => [-(float) $r->cijfer, $r->prijs])->all();
-        $sorted = $rows;
+        $cars = \App\Recommend\Ranking::cars('2026-10-16');
+        $order = array_map(fn ($id) => [-$cars[$id]['cijfer'], $cars[$id]['prijs']], $this->list());
+        $sorted = $order;
         sort($sorted);
-        $this->assertSame($sorted, $rows);
+        $this->assertSame($sorted, $order);
 
         // Only bouwjaar counts: the cars of one year share a cijfer, the cheapest of them first.
         $wensen = Wensen::defaults();
@@ -222,16 +205,17 @@ class RecommendationTest extends TestCase
         $wensen['vakken']['bouwjaar']['belang'] = 5;
         $this->saveWensen($wensen);
 
-        $top = DB::table('match_scores as m')->join('listings as l', 'l.id', '=', 'm.listing_id')
-            ->where('m.date', '2026-10-16')->orderBy('m.rang')->limit(5)->get(['m.cijfer', 'l.bouwjaar', 'l.prijs']);
+        $top = Listing::whereKey(array_slice($this->list(), 0, 5))->get()->sortBy('prijs');
         $this->assertSame([2025], $top->pluck('bouwjaar')->unique()->values()->all());
-        $this->assertSame(Listing::where('bouwjaar', 2025)->orderBy('prijs')->limit(5)->pluck('prijs')->all(), $top->pluck('prijs')->all());
+        $this->assertSame(Listing::where('bouwjaar', 2025)->orderBy('prijs')->limit(5)->pluck('id')->all(), array_slice($this->list(), 0, 5));
     }
 
     public function test_the_live_preview_gives_the_top_5_that_voor_jou_shows_after_saving(): void
     {
         $this->day();
-        $saved = DB::table('match_scores')->where('date', '2026-10-16')->pluck('rang', 'listing_id')->all();
+        $saved = $this->list();
+
+        $this->get('/wensen')->assertOk()->assertInertia(fn ($page) => $page->component('Wensen/Edit')->where('vakken.km.zes', 80000)->has('standaard'));
 
         // Only km counts now, and the deal not at all.
         $wensen = Wensen::defaults();
@@ -244,16 +228,23 @@ class RecommendationTest extends TestCase
         $this->assertCount(5, $preview['top']);
         $this->assertSame([1, 2, 3, 4, 5], array_column($preview['top'], 'rang'));
         foreach ($preview['top'] as $row) {
-            $this->assertSame($saved[$row['id']] - $row['rang'], $row['verschuiving']);
+            $this->assertSame(array_search($row['id'], $saved, true) + 1 - $row['rang'], $row['verschuiving']);
         }
         // A preview stores nothing.
-        $this->assertSame($saved, DB::table('match_scores')->where('date', '2026-10-16')->pluck('rang', 'listing_id')->all());
+        $this->assertSame($saved, $this->list());
+
+        // The preview keeps to the filters.
+        $this->filters(['prijs_max' => 30000]);
+        $this->assertSame(Listing::where('prijs', '<=', 30000)->count(), $this->postJson('/wensen/voorbeeld', $wensen)->json('voldoen'));
+        $this->filters([]);
 
         $this->saveWensen($wensen)->assertRedirect('/voor-jou');
         $ranking = $this->get('/voor-jou')->viewData('page')['props']['ranking']['data'];
 
         $this->assertSame(array_column($preview['top'], 'id'), array_column(array_column(array_slice($ranking, 0, 5), 'car'), 'id'));
         $this->assertEquals(array_column($preview['top'], 'cijfer'), array_column(array_slice($ranking, 0, 5), 'cijfer'));
+        // Saving the vakken keeps the filters.
+        $this->assertSame(Wensen::defaults()['filters'], Wensen::get()['filters']);
 
         // Saved now: nothing moved.
         $this->assertSame([0, 0, 0, 0, 0], array_column($this->postJson('/wensen/voorbeeld', $wensen)->json('top'), 'verschuiving'));
@@ -263,25 +254,12 @@ class RecommendationTest extends TestCase
         $this->postJson('/wensen/voorbeeld', $wensen)->assertUnprocessable()->assertJsonValidationErrors('vakken.km.belang');
         $wensen['vakken']['km']['belang'] = 5;
 
-        // The 10 lies beyond the 6: fewer km than the maximum, a later year, more pk.
+        // The 10 lies beyond the 6: fewer km, a later year, more pk, below the market.
         foreach ([['km', 'tien', 80000], ['bouwjaar', 'tien', 2022], ['vermogen', 'tien', 150], ['deal', 'tien', 0]] as [$vak, $key, $value]) {
             $wrong = $wensen;
             $wrong['vakken'][$vak][$key] = $value;
             $this->postJson('/wensen/voorbeeld', $wrong)->assertUnprocessable()->assertJsonValidationErrors("vakken.{$vak}.{$key}");
         }
-        $wrong = $wensen;
-        $wrong['filters']['prijs_min'] = 50000;
-        $this->postJson('/wensen/voorbeeld', $wrong)->assertUnprocessable()->assertJsonValidationErrors('filters.prijs_max');
-
-        // Any positive whole number, not only multiples of a step.
-        $odd = $wensen;
-        $odd['filters'] = ['prijs_max' => 40250, 'km_max' => 80000, 'bouwjaar_min' => 1985] + $wensen['filters'];
-        $odd['vakken']['vermogen']['min'] = 155;
-        $this->postJson('/wensen/voorbeeld', $odd)->assertOk();
-        $odd['filters']['km_max'] = 0;
-        $this->postJson('/wensen/voorbeeld', $odd)->assertUnprocessable()->assertJsonValidationErrors('filters.km_max');
-        $odd['filters']['km_max'] = 80000.5;
-        $this->postJson('/wensen/voorbeeld', $odd)->assertUnprocessable()->assertJsonValidationErrors('filters.km_max');
     }
 
     public function test_the_command(): void
@@ -289,22 +267,23 @@ class RecommendationTest extends TestCase
         $this->page = FakeGaspedaal::page($this->market(), 20, pageSize: 100);
         app(Scraper::class)->run($this->source);
 
-        $this->artisan('auto:scores')->expectsOutputToContain("20 auto's, ")->assertSuccessful();
+        $this->artisan('auto:scores')->expectsOutputToContain('20 met cijfer.')->assertSuccessful();
     }
 
     public function test_saving_the_wensen_queues_the_recalculation_and_voor_jou_says_so(): void
     {
         $this->day();
-        $before = DB::table('match_scores')->where('date', '2026-10-16')->pluck('rang', 'listing_id')->all();
+        $before = $this->list();
 
         $wensen = Wensen::defaults();
-        $wensen['filters']['prijs_max'] = 30000;
+        $wensen['vakken'] = array_map(fn ($v) => ['belang' => 0] + $v, $wensen['vakken']);
+        $wensen['vakken']['km']['belang'] = 5;
 
-        $this->put('/wensen', $wensen)->assertRedirect('/voor-jou')->assertSessionHas('flash', 'Wensen opgeslagen; de scores worden bijgewerkt.');
+        $this->put('/wensen', $wensen)->assertRedirect('/voor-jou')->assertSessionHas('flash', 'Wensen opgeslagen; de cijfers worden bijgewerkt.');
 
         // Nothing recomputed in the request itself.
         Queue::assertPushedOn('scores', RecomputeMatches::class);
-        $this->assertSame($before, DB::table('match_scores')->where('date', '2026-10-16')->pluck('rang', 'listing_id')->all());
+        $this->assertSame($before, $this->list());
         $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('bijwerken', true)->where('ranking.total', 20));
 
         // Saved again before the worker got to it: the first job leaves the second one pending.
@@ -315,8 +294,9 @@ class RecommendationTest extends TestCase
         $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('bijwerken', true));
 
         app()->call([$second, 'handle']);
-        $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('bijwerken', false)
-            ->where('ranking.total', Listing::where('prijs', '<=', 30000)->count()));
+        $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('bijwerken', false));
+        // Only km counts: fewest km first.
+        $this->assertSame(Listing::orderBy('kilometerstand')->pluck('id')->all(), $this->list());
 
         // A job that fails for good does not leave the page waiting.
         $this->put('/wensen', $wensen);
@@ -360,7 +340,7 @@ class RecommendationTest extends TestCase
         $this->assertSame(0, DB::table('deal_scores')->where('verwachte_prijs', '<=', 0)->count());
         $this->assertSame(19, DB::table('deal_scores')->whereNotNull('verwachte_prijs')->count());
 
-        $this->get('/voor-jou?merk=')->assertInertia(fn ($page) => $page->where('bijwerken', false)->where('ranking.total', fn ($n) => $n > 0));
+        $this->get('/voor-jou')->assertInertia(fn ($page) => $page->where('bijwerken', false)->where('ranking.total', fn ($n) => $n > 0));
         $this->get("/listings/{$typo->listing_id}")->assertInertia(fn ($page) => $page->where('score.deal.onbetrouwbaar', true));
     }
 }

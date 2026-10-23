@@ -40,6 +40,7 @@ Route::middleware('auth')->group(function () {
     Route::delete('/analyse/filters/{savedFilter}', [AnalysisController::class, 'destroy'])->name('analysis.filters.destroy');
 
     Route::get('/voor-jou', [VoorJouController::class, 'index'])->name('voor-jou');
+    Route::put('/voor-jou/filters', [VoorJouController::class, 'filters'])->name('voor-jou.filters');
     Route::get('/wensen', [WensenController::class, 'edit'])->name('wensen');
     Route::put('/wensen', [WensenController::class, 'update']);
     Route::post('/wensen/voorbeeld', [WensenController::class, 'preview'])->name('wensen.preview');

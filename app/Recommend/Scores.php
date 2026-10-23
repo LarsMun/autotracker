@@ -13,12 +13,12 @@ use Throwable;
 
 /**
  * The nightly calculation, for the cars online now: online-since dates, market factors, deal
- * scores, the rapportcijfer of every car, and the ranking of the day.
+ * scores and the rapportcijfer of every car.
  */
 class Scores
 {
     /**
-     * @return array{cars: int, factors: int, with_deal: int, passing: int}
+     * @return array{cars: int, factors: int, with_deal: int, with_cijfer: int}
      */
     public function run(?Carbon $day = null): array
     {
@@ -28,13 +28,13 @@ class Scores
         $this->onlineSince($cars, $day);
         $factors = $this->factors($cars, $day);
         $deals = $this->deals($cars, $factors, $day);
-        $passing = $this->matches($cars, $deals, $day);
+        $withCijfer = $this->matches($cars, $deals, $day);
 
         return [
             'cars' => count($cars),
             'factors' => count($factors->factors),
             'with_deal' => count(array_filter($deals, fn ($d) => $d['verwachte_prijs'] !== null)),
-            'passing' => $passing,
+            'with_cijfer' => $withCijfer,
         ];
     }
 
@@ -46,25 +46,29 @@ class Scores
         $day ??= today();
 
         if (! DB::table('deal_scores')->where('date', $day->toDateString())->exists()) {
-            return $this->run($day)['passing'];
+            return $this->run($day)['with_cijfer'];
         }
 
         return $this->matches($this->cars(), $this->dealsOn($day->toDateString()), $day);
     }
 
     /**
-     * The ranking these wensen would give, with the latest deal scores, without storing anything.
+     * The order these wensen would give, with the latest deal scores, without storing anything.
      *
-     * @return array{rows: array<int, array>, passing: int} rows: listing id => match row, best first
+     * @return array{ids: list<int>, cijfers: array<int, ?float>} ids: the cars through the filters, best first
      */
     public function preview(array $wensen): array
     {
         $date = DB::table('deal_scores')->max('date');
-        $rows = $this->rank($this->cars(), $date ? $this->dealsOn($date) : [], $wensen);
-        $ranked = array_filter($rows, fn ($r) => $r['rang'] !== null);
-        uasort($ranked, fn ($a, $b) => $a['rang'] <=> $b['rang']);
+        $cars = $this->cars();
+        $rows = $this->rank($cars, $date ? $this->dealsOn($date) : [], $wensen);
+        $cijfers = array_map(fn ($r) => $r['cijfer'], $rows);
 
-        return ['rows' => $ranked, 'passing' => count($ranked)];
+        foreach ($cars as $id => &$car) {
+            $car['cijfer'] = $cijfers[$id] ?? null;
+        }
+
+        return ['ids' => Ranking::rank(array_intersect_key($cars, $rows), $wensen), 'cijfers' => $cijfers];
     }
 
     /**
@@ -247,7 +251,7 @@ class Scores
     }
 
     /**
-     * @return int how many cars meet the requirements
+     * @return int how many cars have a cijfer
      */
     private function matches(array $cars, array $deals, Carbon $day): int
     {
@@ -261,12 +265,12 @@ class Scores
             }
         });
 
-        return count(array_filter($rows, fn ($r) => $r['door_eisen']));
+        return count(array_filter($rows, fn ($r) => $r['cijfer'] !== null));
     }
 
     /**
-     * The cijfer of every car, and the ranking of the ones that pass the filters: best cijfer first,
-     * then the cheapest.
+     * The cijfer of every car and its grade per vak. The filters do not come into it: Ranking applies
+     * them when the list is shown.
      *
      * @return array<int, array> listing id => match_scores row without the date
      */
@@ -277,32 +281,15 @@ class Scores
 
         foreach ($cars as $id => $car) {
             try {
-                $rejections = $scorer->rejections($car);
                 $grades = $scorer->grades($car, $deals[$id] ?? null);
                 $cijfer = $scorer->cijfer($grades);
             } catch (Throwable $e) {
-                Log::warning('Scores: car left out of the ranking, its cijfer failed', ['listing_id' => $id, 'error' => $e->getMessage()]);
+                Log::warning('Scores: car left out, its cijfer failed', ['listing_id' => $id, 'error' => $e->getMessage()]);
 
                 continue;
             }
 
-            $rows[$id] = [
-                'listing_id' => $id,
-                'door_eisen' => $rejections === [],
-                'afgewezen' => json_encode($rejections),
-                'cijfer' => $cijfer,
-                'deelscores' => json_encode($grades),
-                'rang' => null,
-            ];
-        }
-
-        $ranked = array_filter($rows, fn ($r) => $r['door_eisen']);
-        // A car without a cijfer (no vak counts) goes last.
-        uksort($ranked, fn ($a, $b) => [$ranked[$b]['cijfer'] ?? -1, $cars[$a]['prijs'], $a] <=> [$ranked[$a]['cijfer'] ?? -1, $cars[$b]['prijs'], $b]);
-        $rank = 0;
-
-        foreach (array_keys($ranked) as $id) {
-            $rows[$id]['rang'] = ++$rank;
+            $rows[$id] = ['listing_id' => $id, 'cijfer' => $cijfer, 'deelscores' => json_encode($grades)];
         }
 
         return $rows;
