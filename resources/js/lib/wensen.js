@@ -1,30 +1,30 @@
-export const wensLabel = {
-    prijs: 'Lage prijs',
-    km: 'Kilometerstand',
+// The vakken of the rapportcijfer, in the order the pages show them.
+export const vakken = ['deal', 'km', 'bouwjaar', 'luxe', 'vermogen']
+
+export const vakLabel = {
+    deal: 'Deal',
+    km: 'Kilometers',
     bouwjaar: 'Bouwjaar',
-    comfort: 'Uitrusting',
-    sport: 'Sportief',
-    merkdealer: 'Merkdealer / merkgarantie',
-    pk: 'Vermogen',
-    model: 'Model',
-    kleur: 'Kleur',
+    luxe: 'Luxe',
+    vermogen: 'Vermogen',
 }
 
-// One plain sentence per wish, for the (i) on "Mijn wensen".
-export const wensUitleg = {
-    prijs: 'Hoe verder onder je budget, hoe hoger de auto scoort.',
-    deal: "Hoe goedkoper de auto is dan vergelijkbare auto's, hoe hoger hij scoort.",
-    comfort: 'Een auto met jouw uitrusting of beter scoort volledig; één niveau lager nog een beetje.',
-    sport: 'Een auto die bij je keuze past scoort volledig, de rest niet.',
-    pk: 'Vanaf je minimum scoort de auto volledig; iets minder vermogen kost punten.',
-    merkdealer: 'Een auto bij een merkdealer of met merkgarantie scoort volledig, de rest niet.',
-    model: 'Hoe hoger het model in je lijst staat, hoe hoger de auto scoort.',
-    kleur: 'Een auto in een van je kleuren scoort volledig. Kies je geen kleur, dan telt kleur niet mee.',
+// Short, for the row of grades in a list.
+export const vakKort = { deal: 'Deal', km: 'Km', bouwjaar: 'Jaar', luxe: 'Luxe', vermogen: 'Pk' }
+
+// Why a vak has no grade for a car.
+export const vakOnbekend = {
+    deal: "Te weinig vergelijkbare auto's, of verdacht goedkoop (Check dit): telt niet mee.",
+    km: 'Kilometerstand onbekend: telt niet mee.',
+    bouwjaar: 'Bouwjaar onbekend: telt niet mee.',
+    luxe: 'Uitvoeringslijn niet herkend: telt niet mee.',
+    vermogen: 'Vermogen onbekend: telt niet mee.',
 }
 
-// Weight per importance button; "Goede deal" sets the match share instead.
+// Weight per importance button.
 export const belangLabel = { 0: 'Niet', 1: 'Beetje', 3: 'Belangrijk', 5: 'Heel belangrijk' }
-export const dealW = { 0: 1, 1: 0.85, 3: 0.7, 5: 0.5 }
+
+export const sportLabel = { maakt_niet_uit: 'Maakt niet uit', ja: 'Alleen sportief', nee: 'Niet sportief' }
 
 export const verruimingLabel = [
     'strikt (bouwjaar ±1, km ±15.000, pk ±15%, comfort ±1)',
@@ -41,4 +41,17 @@ export const chipClass = {
     info: 'bg-stone-50 text-stone-600 ring-stone-200',
 }
 
-export const scoreClass = (s) => (s == null ? 'text-stone-400' : s >= 75 ? 'text-emerald-700' : s >= 50 ? 'text-stone-900' : 'text-red-700')
+const nl = new Intl.NumberFormat('nl-NL', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+
+/** 7.8 → "7,8"; no grade → "?" */
+export const cijferText = (c) => (c == null ? '?' : nl.format(c))
+
+// A rapportcijfer reads like a school report: below 5,5 is onvoldoende.
+export const cijferBadgeClass = (c) =>
+    c == null ? 'bg-stone-100 text-stone-400'
+        : c >= 8 ? 'bg-emerald-700 text-white'
+            : c >= 7 ? 'bg-emerald-100 text-emerald-900'
+                : c >= 5.5 ? 'bg-stone-100 text-stone-800'
+                    : 'bg-red-100 text-red-800'
+
+export const cijferTextClass = (c) => (c == null ? 'text-stone-400' : c >= 8 ? 'text-emerald-700' : c >= 5.5 ? 'text-stone-800' : 'text-red-700')

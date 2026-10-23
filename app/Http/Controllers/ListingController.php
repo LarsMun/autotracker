@@ -92,7 +92,8 @@ class ListingController extends Controller
     }
 
     /**
-     * "Waarom deze score": the latest deal and match scores, with the comparable cars.
+     * "Waarom dit cijfer": the latest cijfer with its grades per vak, the deal behind the deal grade
+     * and the comparable cars.
      */
     private function score(Listing $listing): ?array
     {
@@ -112,13 +113,8 @@ class ListingController extends Controller
             'door_eisen' => (bool) ($match->door_eisen ?? false),
             'afgewezen' => json_decode($match->afgewezen ?? '[]', true),
             'rang' => $match->rang ?? null,
-            'matchscore' => $match ? (float) $match->matchscore : null,
-            'dealscore_score' => $match ? (float) $match->dealscore_score : null,
-            'totaalscore' => $match ? (float) $match->totaalscore : null,
-            'w' => (float) $wensen['w'],
-            'deelscores' => collect(json_decode($match->deelscores ?? '{}', true))
-                ->map(fn ($score, $wish) => ['wens' => $wish, 'score' => $score, 'gewicht' => (int) (Wensen::weights($wensen)[$wish] ?? 0)])
-                ->values(),
+            'cijfer' => $match?->cijfer === null ? null : (float) $match->cijfer,
+            'vakken' => $this->vakken($listing, json_decode($match->deelscores ?? 'null', true), $deal, $wensen),
             'deal' => $deal ? [
                 'verwachte_prijs' => $deal->verwachte_prijs,
                 'deal_eur' => $deal->deal_eur,
@@ -142,5 +138,40 @@ class ListingController extends Controller
             'online_sinds' => $listing->online_sinds?->toDateString(),
             'online_sinds_bron' => $listing->online_sinds_bron,
         ];
+    }
+
+    /**
+     * Per vak: the car's value, its grade, its importance and its share in the cijfer. Empty when
+     * the latest grades are from before the rapportcijfer.
+     *
+     * @param  ?array<string, ?float>  $grades
+     * @return list<array{vak: string, waarde: ?string, cijfer: ?float, belang: int, aandeel: ?int}>
+     */
+    private function vakken(Listing $listing, ?array $grades, ?object $deal, array $wensen): array
+    {
+        if ($grades === null) {
+            return [];
+        }
+
+        $weights = Wensen::weights($wensen);
+        // Only the vakken that count for this car share the cijfer.
+        $total = array_sum(array_filter($weights, fn ($w, $vak) => ($grades[$vak] ?? null) !== null, ARRAY_FILTER_USE_BOTH));
+        $nl = fn (int|float $n, int $decimals = 0) => number_format($n, $decimals, ',', '.');
+
+        $values = [
+            'deal' => $deal?->deal_pct === null ? null : ((float) $deal->deal_pct >= 0 ? $nl(abs((float) $deal->deal_pct), 1).'% onder de markt' : $nl(abs((float) $deal->deal_pct), 1).'% boven de markt'),
+            'km' => $listing->kilometerstand === null ? null : $nl($listing->kilometerstand).' km',
+            'bouwjaar' => $listing->bouwjaar === null ? null : (string) $listing->bouwjaar,
+            'luxe' => $listing->uitvoeringslijn === null ? null : "{$listing->uitvoeringslijn} (niveau {$listing->comfort_niveau})",
+            'vermogen' => $listing->pk() === null ? null : $listing->pk().' pk',
+        ];
+
+        return array_map(fn ($vak) => [
+            'vak' => $vak,
+            'waarde' => $values[$vak],
+            'cijfer' => $grades[$vak] ?? null,
+            'belang' => $weights[$vak],
+            'aandeel' => $total > 0 && ($grades[$vak] ?? null) !== null && $weights[$vak] > 0 ? (int) round(100 * $weights[$vak] / $total) : null,
+        ], Wensen::VAKKEN);
     }
 }

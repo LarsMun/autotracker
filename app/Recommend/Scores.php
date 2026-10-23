@@ -13,7 +13,7 @@ use Throwable;
 
 /**
  * The nightly calculation, for the cars online now: online-since dates, market factors, deal
- * scores, match and total scores, and the ranking of the day.
+ * scores, the rapportcijfer of every car, and the ranking of the day.
  */
 class Scores
 {
@@ -39,7 +39,7 @@ class Scores
     }
 
     /**
-     * Only the match and total scores again, with today's deal scores: after the wensen changed.
+     * Only the cijfers again, with today's deal scores: after the wensen changed.
      */
     public function rematch(?Carbon $day = null): int
     {
@@ -88,7 +88,7 @@ class Scores
 
         Listing::query()
             ->whereExists(fn ($q) => $q->from('listing_source')->whereColumn('listing_source.listing_id', 'listings.id')->whereNull('listing_source.gone_at'))
-            ->select(['id', 'advertentie_id', 'merk', 'model', 'bouwjaar', 'kilometerstand', 'prijs', 'vermogen_kw', 'kleur', 'comfort_niveau', 'sport', 'aanbieder_type', 'garantie', 'datum_geplaatst', 'first_seen'])
+            ->select(['id', 'advertentie_id', 'merk', 'model', 'bouwjaar', 'kilometerstand', 'prijs', 'vermogen_kw', 'kleur', 'comfort_niveau', 'uitvoeringslijn', 'sport', 'aanbieder_type', 'garantie', 'datum_geplaatst', 'first_seen'])
             ->chunkById(1000, function ($chunk) use (&$cars) {
                 foreach ($chunk as $l) {
                     $cars[$l->id] = [
@@ -102,6 +102,7 @@ class Scores
                         'pk' => $l->pk(),
                         'kleur' => $l->kleur,
                         'comfort_niveau' => $l->comfort_niveau,
+                        'uitvoeringslijn' => $l->uitvoeringslijn,
                         'sport' => $l->sport,
                         'aanbieder_type' => $l->aanbieder_type,
                         'garantie' => $l->garantie,
@@ -264,56 +265,40 @@ class Scores
     }
 
     /**
-     * Match and total scores for every car, and the ranking of the ones that meet the requirements.
+     * The cijfer of every car, and the ranking of the ones that pass the filters: best cijfer first,
+     * then the cheapest.
      *
      * @return array<int, array> listing id => match_scores row without the date
      */
     private function rank(array $cars, array $deals, array $wensen): array
     {
-        // The year score runs from the newest year among the cars that meet the requirements.
-        $checker = new MatchScorer($wensen);
-        $rejections = [];
+        $scorer = new MatchScorer($wensen);
+        $rows = [];
 
         foreach ($cars as $id => $car) {
             try {
-                $rejections[$id] = $checker->rejections($car);
+                $rejections = $scorer->rejections($car);
+                $grades = $scorer->grades($car, $deals[$id] ?? null);
+                $cijfer = $scorer->cijfer($grades);
             } catch (Throwable $e) {
-                Log::warning('Scores: car left out of the ranking, its requirements check failed', ['listing_id' => $id, 'error' => $e->getMessage()]);
-            }
-        }
-
-        $years = array_filter(array_map(fn ($car) => $car['bouwjaar'], array_intersect_key($cars, array_filter($rejections, fn ($r) => $r === []))));
-        $scorer = new MatchScorer($wensen, $years ? max($years) : null);
-        $rows = [];
-
-        foreach (array_intersect_key($cars, $rejections) as $id => $car) {
-            try {
-                $scores = $scorer->scores($car);
-                $match = $scorer->match($scores);
-                $deal = $deals[$id] ?? ['deal_pct' => null, 'check_dit' => false];
-                $dealScore = MatchScorer::dealScore($deal['deal_pct'], (bool) $deal['check_dit']);
-                $total = $scorer->total($match, $dealScore);
-            } catch (Throwable $e) {
-                Log::warning('Scores: car left out of the ranking, its match score failed', ['listing_id' => $id, 'error' => $e->getMessage()]);
+                Log::warning('Scores: car left out of the ranking, its cijfer failed', ['listing_id' => $id, 'error' => $e->getMessage()]);
 
                 continue;
             }
 
             $rows[$id] = [
                 'listing_id' => $id,
-                'door_eisen' => $rejections[$id] === [],
-                'afgewezen' => json_encode($rejections[$id]),
-                'matchscore' => $match,
-                'dealscore_score' => $dealScore,
-                'totaalscore' => $total,
-                'deelscores' => json_encode($scores),
+                'door_eisen' => $rejections === [],
+                'afgewezen' => json_encode($rejections),
+                'cijfer' => $cijfer,
+                'deelscores' => json_encode($grades),
                 'rang' => null,
             ];
         }
 
-        // The ranking: the cars that meet the requirements, best total first.
         $ranked = array_filter($rows, fn ($r) => $r['door_eisen']);
-        uasort($ranked, fn ($a, $b) => [$b['totaalscore'], $b['matchscore'], $a['listing_id']] <=> [$a['totaalscore'], $a['matchscore'], $b['listing_id']]);
+        // A car without a cijfer (no vak counts) goes last.
+        uksort($ranked, fn ($a, $b) => [$ranked[$b]['cijfer'] ?? -1, $cars[$a]['prijs'], $a] <=> [$ranked[$a]['cijfer'] ?? -1, $cars[$b]['prijs'], $b]);
         $rank = 0;
 
         foreach (array_keys($ranked) as $id) {

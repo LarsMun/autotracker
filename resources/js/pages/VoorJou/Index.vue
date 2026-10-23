@@ -3,18 +3,22 @@ import { Head, Link, router } from '@inertiajs/vue3'
 import { computed, ref, watch } from 'vue'
 import AppLayout from '../../layouts/AppLayout.vue'
 import CarPhoto from '../../components/CarPhoto.vue'
+import Cijfer from '../../components/Cijfer.vue'
 import KleurBadge from '../../components/KleurBadge.vue'
 import MultiSelect from '../../components/MultiSelect.vue'
 import Pagination from '../../components/Pagination.vue'
 import UitrustingBadge from '../../components/UitrustingBadge.vue'
-import { date, euro, km, num, signed } from '../../lib/format'
+import { date, euro, km } from '../../lib/format'
 import { usePollWhileRunning } from '../../lib/usePollWhileRunning'
-import { chipClass, scoreClass } from '../../lib/wensen'
+import { chipClass, cijferText, cijferTextClass, vakKort, vakLabel, vakOnbekend, vakken } from '../../lib/wensen'
 
-const props = defineProps({ day: String, ranking: Object, top: Object, wensen: Object, filters: Object, options: Array, bijwerken: Boolean })
+const props = defineProps({ day: String, ranking: Object, top: Object, gewichten: Object, filters: Object, options: Array, bijwerken: Boolean })
+
+// Only the vakken that count; the heaviest first.
+const shownVakken = computed(() => vakken.filter((v) => props.gewichten[v] > 0).sort((a, b) => props.gewichten[b] - props.gewichten[a]))
 
 // After saving the wensen the queue recomputes the ranking; reload until it is done.
-usePollWhileRunning(() => props.bijwerken, ['day', 'ranking', 'top', 'wensen', 'options', 'bijwerken'])
+usePollWhileRunning(() => props.bijwerken, ['day', 'ranking', 'top', 'gewichten', 'options', 'bijwerken'])
 
 // ---------- Make and model filter: only narrows the list, the ranking stays the same ----------
 const split = (v) => (v ? v.split(',') : [])
@@ -63,7 +67,7 @@ const daysSince = (d, day) => Math.round((new Date(`${day}T12:00:00`) - new Date
             <div>
                 <h1 class="text-2xl font-semibold tracking-tight">Voor jou</h1>
                 <p v-if="day" class="mt-1 text-sm text-stone-500">
-                    De auto's die aan je harde eisen voldoen, op totaalscore ({{ Math.round(wensen.w * 100) }}% match, {{ Math.round((1 - wensen.w) * 100) }}% deal). Berekend op {{ date(day) }}.
+                    De auto's die door je filters komen, op rapportcijfer; bij een gelijk cijfer de goedkoopste eerst. Berekend op {{ date(day) }}.
                 </p>
             </div>
             <Link href="/wensen" class="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm hover:bg-stone-50">Mijn wensen aanpassen</Link>
@@ -71,11 +75,11 @@ const daysSince = (d, day) => Math.round((new Date(`${day}T12:00:00`) - new Date
 
         <p v-if="bijwerken" class="mt-4 flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-4 py-2.5 text-sm text-teal-900" role="status">
             <span class="size-3 animate-spin rounded-full border-2 border-teal-300 border-t-teal-700" aria-hidden="true"></span>
-            Scores worden bijgewerkt… De lijst hieronder is nog die van vóór je laatste wijziging.
+            Cijfers worden bijgewerkt… De lijst hieronder is nog die van vóór je laatste wijziging.
         </p>
 
         <p v-if="!day" class="mt-6 rounded-lg border border-dashed border-stone-300 px-4 py-8 text-center text-sm text-stone-500">
-            Nog geen scores. Ze worden elke nacht na de dagelijkse run berekend, of meteen als je je wensen opslaat.
+            Nog geen cijfers. Ze worden elke nacht na de dagelijkse run berekend, of meteen als je je wensen opslaat.
         </p>
 
         <template v-else>
@@ -129,6 +133,12 @@ const daysSince = (d, day) => Math.round((new Date(`${day}T12:00:00`) - new Date
                             <UitrustingBadge :niveau="r.car.comfort_niveau" :sport="r.car.sport" class="ml-1 align-middle" />
                             <KleurBadge :kleur="r.car.kleur" class="ml-1 align-middle" />
                         </p>
+                        <dl class="tabular mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-sm">
+                            <div v-for="v in shownVakken" :key="v" class="flex gap-1" :title="r.cijfers[v] == null ? vakOnbekend[v] : `${vakLabel[v]}: ${cijferText(r.cijfers[v])}`">
+                                <dt class="text-stone-500">{{ vakKort[v] }}</dt>
+                                <dd class="font-medium" :class="cijferTextClass(r.cijfers[v])">{{ cijferText(r.cijfers[v]) }}</dd>
+                            </div>
+                        </dl>
                         <ul class="mt-2 flex flex-wrap gap-1.5">
                             <li v-for="c in r.chips" :key="c.tekst" class="rounded-full px-2 py-0.5 text-xs ring-1" :class="chipClass[c.toon]">{{ c.tekst }}</li>
                             <li v-if="top.sinds[r.car.id] && daysSince(top.sinds[r.car.id], day) > 0" class="rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-800 ring-1 ring-teal-200">
@@ -136,17 +146,14 @@ const daysSince = (d, day) => Math.round((new Date(`${day}T12:00:00`) - new Date
                             </li>
                         </ul>
                     </div>
-                    <dl class="tabular grid grid-cols-3 gap-x-4 gap-y-0.5 text-right text-sm sm:grid-cols-1 sm:content-start">
-                        <div><dt class="text-xs text-stone-500">Prijs</dt><dd class="font-semibold">{{ euro(r.car.prijs) }}</dd></div>
-                        <div><dt class="text-xs text-stone-500">Totaal</dt><dd class="text-lg font-semibold" :class="scoreClass(r.totaalscore)">{{ r.totaalscore.toFixed(0) }}</dd></div>
-                        <div><dt class="text-xs text-stone-500">Match · deal</dt>
-                            <dd><span :class="scoreClass(r.matchscore)">{{ r.matchscore.toFixed(0) }}</span> · <span v-if="r.deal_pct !== null" :class="r.check_dit ? 'text-amber-700' : r.deal_pct >= 0 ? 'text-emerald-700' : 'text-red-700'">{{ r.deal_pct > 0 ? '+' : '' }}{{ r.deal_pct.toFixed(1) }}%</span><span v-else class="text-stone-400">–</span></dd>
-                        </div>
-                    </dl>
+                    <div class="tabular flex items-center gap-3 sm:flex-col sm:items-end sm:gap-1">
+                        <Cijfer :value="r.cijfer" />
+                        <p class="font-semibold">{{ euro(r.car.prijs) }}</p>
+                    </div>
                 </li>
             </ol>
             <p v-if="!ranking.data.length" class="mt-6 rounded-lg border border-dashed border-stone-300 px-4 py-8 text-center text-sm text-stone-500">
-                {{ filtered ? 'Geen auto van dit merk of model voldoet aan je harde eisen.' : 'Geen enkele auto voldoet aan je harde eisen.' }}
+                {{ filtered ? 'Geen auto van dit merk of model komt door je filters.' : 'Geen enkele auto komt door je filters.' }}
             </p>
             <Pagination :paginator="ranking" />
         </template>

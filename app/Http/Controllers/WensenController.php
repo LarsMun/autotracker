@@ -23,15 +23,18 @@ class WensenController extends Controller
     {
         $wensen = Wensen::get();
 
-        // Every model online now, in the order of preference, the rest after.
+        // Every make and model online now, with how many cars each.
         $models = DB::table('listings')
             ->whereExists(fn ($q) => $q->from('listing_source')->whereColumn('listing_source.listing_id', 'listings.id')->whereNull('listing_source.gone_at'))
+            ->whereNotNull('merk')
             ->selectRaw('merk, model, count(*) as n')
             ->groupBy('merk', 'model')->orderBy('merk')->orderBy('model')->get()
-            ->map(fn ($m) => ['key' => "{$m->merk}|{$m->model}", 'naam' => "{$m->merk} {$m->model}", 'n' => (int) $m->n]);
-
-        $order = array_flip($wensen['modellen']);
-        $models = $models->sortBy(fn ($m) => [isset($order[$m['key']]) ? 0 : 1, $order[$m['key']] ?? 0, $m['naam']])->values();
+            ->groupBy('merk')
+            ->map(fn ($rows, $merk) => [
+                'merk' => $merk,
+                'n' => (int) $rows->sum('n'),
+                'modellen' => $rows->whereNotNull('model')->map(fn ($r) => ['model' => $r->model, 'n' => (int) $r->n])->values()->all(),
+            ])->values();
 
         $colours = DB::table('listings')
             ->whereExists(fn ($q) => $q->from('listing_source')->whereColumn('listing_source.listing_id', 'listings.id')->whereNull('listing_source.gone_at'))
@@ -41,7 +44,7 @@ class WensenController extends Controller
 
         return Inertia::render('Wensen/Edit', [
             'wensen' => $wensen,
-            'modellen' => $models,
+            'merken' => $models,
             'kleuren' => $colours,
             'standaard' => Wensen::defaults(),
         ]);
@@ -77,7 +80,7 @@ class WensenController extends Controller
                 return [
                     'id' => $id,
                     'rang' => $row['rang'],
-                    'totaalscore' => $row['totaalscore'],
+                    'cijfer' => $row['cijfer'],
                     // Places up (positive) or down against the saved ranking; null: not in it yet.
                     'verschuiving' => $was === null ? null : $was - $row['rang'],
                     'car' => array_intersect_key($car, array_flip(['title', 'bouwjaar', 'kilometerstand', 'prijs', 'foto'])),
@@ -89,37 +92,46 @@ class WensenController extends Controller
     private function wensen(Request $request): array
     {
         $data = $request->validate([
-            'eisen.prijs_max' => ['required', 'integer', 'min:1'],
-            'eisen.km_max' => ['required', 'integer', 'min:1'],
-            'eisen.km_ruimer' => ['boolean'],
-            'eisen.bouwjaar_min' => ['required', 'integer', 'min:1'],
-            'eisen.bouwjaar_ruimer' => ['boolean'],
-            'eisen.uitsluiten' => ['array'],
-            'eisen.uitsluiten.*' => ['string'],
-            'eisen.kleuren_uitsluiten' => ['array'],
-            'eisen.kleuren_uitsluiten.*' => ['string', 'max:50'],
-            'eisen.alleen_merkdealer' => ['boolean'],
-            'gewichten' => ['required', 'array'],
-            'gewichten.*' => ['integer', Rule::in(Wensen::BELANG)],
-            'comfort_doel' => ['required', 'integer', 'min:1', 'max:3'],
-            'sport' => ['required', Rule::in(['ja', 'nee'])],
-            'pk_min' => ['required', 'integer', 'min:0'],
-            'modellen' => ['array'],
-            'modellen.*' => ['string'],
-            'kleuren' => ['array'],
-            'kleuren.*' => ['string', 'max:50'],
-            'w' => ['required', 'numeric', Rule::in(Wensen::DEAL)],
+            'filters.prijs_min' => ['required', 'integer', 'min:0'],
+            'filters.prijs_max' => ['required', 'integer', 'min:1', 'gte:filters.prijs_min'],
+            'filters.km_max' => ['required', 'integer', 'min:1'],
+            'filters.bouwjaar_min' => ['required', 'integer', 'min:1900'],
+            'filters.merken' => ['array'],
+            'filters.merken.*' => ['string', 'max:100'],
+            'filters.modellen' => ['array'],
+            'filters.modellen.*' => ['string', 'max:200'],
+            'filters.kleuren' => ['array'],
+            'filters.kleuren.*' => ['string', 'max:50'],
+            'filters.onbekende_kleur' => ['boolean'],
+            'filters.sport' => ['required', Rule::in(Wensen::SPORT)],
+            'filters.alleen_merkdealer' => ['boolean'],
+            'vakken' => ['required', 'array'],
+            'vakken.*.belang' => ['required', 'integer', Rule::in(Wensen::BELANG)],
+            // What earns a 10 must lie beyond the 6, on the good side.
+            'vakken.deal.tien' => ['required', 'numeric', 'gt:0', 'max:50'],
+            'vakken.km.tien' => ['required', 'integer', 'min:0', 'lt:filters.km_max'],
+            'vakken.bouwjaar.tien' => ['required', 'integer', 'gt:filters.bouwjaar_min'],
+            'vakken.vermogen.min' => ['required', 'integer', 'min:1'],
+            'vakken.vermogen.tien' => ['required', 'integer', 'gt:vakken.vermogen.min'],
+        ], [
+            'vakken.km.tien.lt' => 'Het aantal km voor een 10 moet onder je maximum liggen.',
+            'vakken.bouwjaar.tien.gt' => 'Het bouwjaar voor een 10 moet na je minimale bouwjaar liggen.',
+            'vakken.vermogen.tien.gt' => 'Het vermogen voor een 10 moet boven het vermogen voor een 6 liggen.',
+            'filters.prijs_max.gte' => 'De maximale prijs moet minstens de minimale prijs zijn.',
         ]);
 
         $wensen = array_replace_recursive(Wensen::defaults(), $data);
-        // Lists replace, they do not merge by index.
-        $wensen['eisen']['uitsluiten'] = array_values($data['eisen']['uitsluiten'] ?? []);
-        $wensen['modellen'] = array_values($data['modellen'] ?? []);
-        $wensen['eisen']['kleuren_uitsluiten'] = array_values($data['eisen']['kleuren_uitsluiten'] ?? []);
-        // Excluded wins over preferred.
-        $wensen['kleuren'] = array_values(array_diff($data['kleuren'] ?? [], $wensen['eisen']['kleuren_uitsluiten']));
-        $wensen['gewichten'] = array_intersect_key($wensen['gewichten'], array_flip(Wensen::SOFT));
-        $wensen['w'] = (float) $wensen['w'];
+        $wensen['vakken'] = array_intersect_key($wensen['vakken'], array_flip(Wensen::VAKKEN));
+        $wensen['vakken']['deal']['tien'] = (float) $wensen['vakken']['deal']['tien'];
+
+        // Lists replace, they do not merge by index. A model counts only with its make chosen.
+        $f = &$wensen['filters'];
+        $f['merken'] = array_values(array_unique($data['filters']['merken'] ?? []));
+        $f['modellen'] = array_values(array_filter(array_unique($data['filters']['modellen'] ?? []),
+            fn ($m) => str_contains($m, '|') && in_array(explode('|', $m, 2)[0], $f['merken'], true)));
+        $f['kleuren'] = array_values(array_unique($data['filters']['kleuren'] ?? []));
+        $f['onbekende_kleur'] = (bool) $f['onbekende_kleur'];
+        $f['alleen_merkdealer'] = (bool) $f['alleen_merkdealer'];
 
         return $wensen;
     }

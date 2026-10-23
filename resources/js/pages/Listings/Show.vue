@@ -3,10 +3,11 @@ import { Head, Link } from '@inertiajs/vue3'
 import { computed, ref } from 'vue'
 import AppLayout from '../../layouts/AppLayout.vue'
 import CarPhoto from '../../components/CarPhoto.vue'
+import Cijfer from '../../components/Cijfer.vue'
 import StepChart from '../../components/StepChart.vue'
 import { comfortDots, comfortLabel, optieLabel } from '../../lib/uitrusting'
 import { kleurLabel } from '../../lib/kleur'
-import { belangLabel, verruimingLabel, wensLabel, scoreClass } from '../../lib/wensen'
+import { belangLabel, cijferText, cijferTextClass, vakLabel, vakOnbekend, verruimingLabel } from '../../lib/wensen'
 import { garantieLabel, merkdealerUitleg, sellerLabel } from '../../lib/seller'
 import { date, dateTime, euro, km, num, signed } from '../../lib/format'
 
@@ -105,40 +106,44 @@ const specs = computed(() => [
 
         <section v-if="score" class="mt-8 rounded-lg border border-stone-200 bg-white p-4">
             <div class="flex flex-wrap items-baseline justify-between gap-2">
-                <h2 class="text-lg font-semibold">Waarom deze score</h2>
+                <h2 class="text-lg font-semibold">Waarom dit cijfer</h2>
                 <p class="text-xs text-stone-500">Berekend op {{ date(score.date) }} · <Link href="/wensen" class="text-teal-700 hover:underline">mijn wensen</Link></p>
             </div>
 
             <div v-if="!score.door_eisen" class="mt-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700">
-                Valt af op je harde eisen: {{ score.afgewezen.join(', ') }}. Hieronder de scores zoals ze zouden zijn.
+                Komt niet door je filters: {{ score.afgewezen.join(', ') }}. Hieronder het cijfer zoals het zou zijn.
             </div>
 
-            <dl class="tabular mt-4 grid grid-cols-3 gap-3 text-sm sm:max-w-lg">
-                <div class="rounded-md bg-stone-50 p-3"><dt class="text-xs text-stone-500">Totaal{{ score.rang ? ` · #${score.rang}` : '' }}</dt><dd class="text-2xl font-semibold" :class="scoreClass(score.totaalscore)">{{ score.totaalscore?.toFixed(0) ?? '–' }}</dd></div>
-                <div class="rounded-md bg-stone-50 p-3"><dt class="text-xs text-stone-500">Match ({{ Math.round(score.w * 100) }}%)</dt><dd class="text-2xl font-semibold" :class="scoreClass(score.matchscore)">{{ score.matchscore?.toFixed(0) ?? '–' }}</dd></div>
-                <div class="rounded-md bg-stone-50 p-3"><dt class="text-xs text-stone-500">Deal ({{ Math.round((1 - score.w) * 100) }}%)</dt><dd class="text-2xl font-semibold" :class="scoreClass(score.dealscore_score)">{{ score.dealscore_score?.toFixed(0) ?? '–' }}</dd></div>
-            </dl>
+            <div class="mt-4 flex items-center gap-4">
+                <Cijfer :value="score.cijfer" size="lg" />
+                <p class="text-sm text-stone-600">
+                    <template v-if="score.rang"><span class="font-medium text-stone-900">#{{ score.rang }}</span> bij Voor jou. </template>
+                    Het gewogen gemiddelde van de vakken hieronder; een vak met een ? telt niet mee.
+                </p>
+            </div>
 
             <div class="mt-6 grid gap-6 lg:grid-cols-2">
                 <div>
-                    <h3 class="text-sm font-semibold">Deelscores per wens</h3>
-                    <table class="tabular mt-2 w-full text-sm">
-                        <thead class="text-left text-xs text-stone-500"><tr><th class="py-1 font-medium">Wens</th><th class="py-1 text-right font-medium">Belang</th><th class="py-1 text-right font-medium">Score</th></tr></thead>
+                    <h3 class="text-sm font-semibold">Cijfer per vak</h3>
+                    <table v-if="score.vakken.length" class="tabular mt-2 w-full text-sm">
+                        <thead class="text-left text-xs text-stone-500"><tr><th class="py-1 font-medium">Vak</th><th class="py-1 font-medium">Deze auto</th><th class="py-1 text-right font-medium">Cijfer</th><th class="py-1 text-right font-medium" title="Hoeveel dit vak meetelt in het cijfer van deze auto">Weegt</th></tr></thead>
                         <tbody class="divide-y divide-stone-100">
-                            <tr v-for="d in score.deelscores" :key="d.wens" :class="{ 'text-stone-400': !d.gewicht || d.score === null }">
-                                <td class="py-1.5">{{ wensLabel[d.wens] ?? d.wens }}</td>
-                                <td class="py-1.5 text-right">{{ belangLabel[d.gewicht] ?? d.gewicht }}</td>
-                                <td class="py-1.5 text-right">
-                                    <span class="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-stone-100 align-middle"><span class="block h-full bg-teal-600" :style="{ width: `${d.score ?? 0}%` }"></span></span>
-                                    <span class="ml-2 inline-block w-8 font-medium" :class="d.gewicht ? scoreClass(d.score) : ''" :title="d.score === null ? 'Telt niet mee: geen voorkeur ingesteld' : null">{{ d.score ?? '–' }}</span>
+                            <tr v-for="v in score.vakken" :key="v.vak" :class="{ 'text-stone-400': !v.belang }">
+                                <td class="py-1.5">{{ vakLabel[v.vak] }}</td>
+                                <td class="py-1.5 pr-2">{{ v.waarde ?? '–' }}</td>
+                                <td class="py-1.5 text-right whitespace-nowrap" :title="v.cijfer == null ? vakOnbekend[v.vak] : null">
+                                    <span class="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-stone-100 align-middle"><span class="block h-full" :class="v.cijfer >= 5.5 ? 'bg-teal-600' : 'bg-red-500'" :style="{ width: `${v.cijfer == null ? 0 : v.cijfer * 10}%` }"></span></span>
+                                    <span class="ml-2 inline-block w-8 font-medium" :class="v.belang ? cijferTextClass(v.cijfer) : ''">{{ cijferText(v.cijfer) }}</span>
                                 </td>
+                                <td class="py-1.5 text-right whitespace-nowrap" :title="belangLabel[v.belang]">{{ v.aandeel == null ? (v.belang ? '–' : 'niet') : `${v.aandeel}%` }}</td>
                             </tr>
                         </tbody>
                     </table>
+                    <p v-else class="mt-2 text-sm text-stone-500">Nog geen cijfer berekend voor deze auto.</p>
                 </div>
 
                 <div>
-                    <h3 class="text-sm font-semibold">Dealscore</h3>
+                    <h3 class="text-sm font-semibold">De deal</h3>
                     <template v-if="score.deal?.verwachte_prijs">
                         <dl class="tabular mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
                             <dt class="text-stone-500">Verwachte prijs</dt><dd>{{ euro(score.deal.verwachte_prijs) }}</dd>
@@ -151,11 +156,11 @@ const specs = computed(() => [
                             <dt class="text-stone-500">Correctie</dt><dd>factoren van {{ { model: 'dit model', merk: 'het merk', alle: 'alle auto\'s' }[score.deal.factor_scope] }}</dd>
                         </dl>
                         <p v-if="score.deal.check_dit" class="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                            <strong>Check dit:</strong> meer dan 15% onder de verwachting. Mogelijk schade, import of een fout in de advertentie; telt daarom niet als topdeal.
+                            <strong>Check dit:</strong> meer dan 15% onder de verwachting. Mogelijk schade, import of een fout in de advertentie; krijgt daarom geen dealcijfer.
                         </p>
                     </template>
-                    <p v-else-if="score.deal?.onbetrouwbaar" class="mt-2 text-sm text-stone-500">Onvoldoende betrouwbaar: na correctie voor leeftijd en km valt de verwachte prijs buiten 30–300% van wat de {{ score.deal.vergelijkbaar_n }} vergelijkbare auto's vragen. Geen dealscore; de deal telt mee als 50.</p>
-                    <p v-else class="mt-2 text-sm text-stone-500">Onvoldoende vergelijkingsmateriaal: {{ score.deal?.vergelijkbaar_n ?? 0 }} vergelijkbare auto's, ook na verruimen (minimaal 3 nodig). De deal telt mee als 50.</p>
+                    <p v-else-if="score.deal?.onbetrouwbaar" class="mt-2 text-sm text-stone-500">Onvoldoende betrouwbaar: na correctie voor leeftijd en km valt de verwachte prijs buiten 30–300% van wat de {{ score.deal.vergelijkbaar_n }} vergelijkbare auto's vragen. Geen dealcijfer; de deal telt niet mee.</p>
+                    <p v-else class="mt-2 text-sm text-stone-500">Onvoldoende vergelijkingsmateriaal: {{ score.deal?.vergelijkbaar_n ?? 0 }} vergelijkbare auto's, ook na verruimen (minimaal 3 nodig). Geen dealcijfer; de deal telt niet mee.</p>
                     <p v-if="score.online_sinds" class="mt-3 text-xs text-stone-500">
                         Online sinds {{ date(score.online_sinds) }}{{ score.online_sinds_bron === 'first_seen' ? ' (eigen eerste waarneming; Gaspedaal\'s datum was onwaarschijnlijk)' : '' }}.
                     </p>

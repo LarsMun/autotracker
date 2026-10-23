@@ -37,7 +37,7 @@ class VoorJouController extends Controller
         $wensen = Wensen::get();
 
         if ($day === null) {
-            return Inertia::render('VoorJou/Index', ['day' => null, 'ranking' => null, 'top' => null, 'wensen' => $wensen, 'filters' => $filters, 'options' => [], 'bijwerken' => RecomputeMatches::pending()]);
+            return Inertia::render('VoorJou/Index', ['day' => null, 'ranking' => null, 'top' => null, 'gewichten' => Wensen::weights($wensen), 'filters' => $filters, 'options' => [], 'bijwerken' => RecomputeMatches::pending()]);
         }
 
         $merken = array_filter(explode(',', $filters['merk']));
@@ -63,14 +63,14 @@ class VoorJouController extends Controller
         // The place within the filtered list; rang stays the place in the whole ranking.
         $plek = ($ranking->firstItem() ?? 1) - 1;
         $ranking->through(function ($row) use (&$plek, $listings, $wensen) {
-            return ['plek' => ++$plek] + $this->row($row, $listings[$row->listing_id], $wensen);
+            return ['plek' => ++$plek] + $this->row($row, $listings[$row->listing_id]);
         });
 
         return Inertia::render('VoorJou/Index', [
             'day' => $day,
             'ranking' => $ranking,
             'top' => $this->topChanges($day),
-            'wensen' => ['w' => $wensen['w']],
+            'gewichten' => Wensen::weights($wensen),
             'filters' => $filters,
             'options' => $this->options($day),
             'bijwerken' => RecomputeMatches::pending(),
@@ -123,7 +123,7 @@ class VoorJouController extends Controller
             ])->values()->all();
     }
 
-    private function row(object $m, Listing $listing, array $wensen): array
+    private function row(object $m, Listing $listing): array
     {
         $car = $listing->summary() + [
             'online_sinds' => $listing->online_sinds?->toDateString(),
@@ -142,12 +142,9 @@ class VoorJouController extends Controller
 
         return [
             'rang' => $m->rang,
-            'totaalscore' => (float) $m->totaalscore,
-            'matchscore' => (float) $m->matchscore,
-            'deal_eur' => $m->deal_eur,
-            'deal_pct' => $m->deal_pct === null ? null : (float) $m->deal_pct,
-            'check_dit' => (bool) $m->check_dit,
-            'chips' => Reasons::chips($car, $deal, json_decode($m->deelscores, true), $wensen),
+            'cijfer' => $m->cijfer === null ? null : (float) $m->cijfer,
+            'cijfers' => json_decode($m->deelscores ?? '{}', true),
+            'chips' => Reasons::chips($car, $deal),
             'car' => $car,
         ];
     }

@@ -3,17 +3,16 @@
 namespace App\Recommend;
 
 /**
- * The few reasons worth showing for a car's score, as short chips: "€2,1k onder 12 vergelijkbare",
- * "km ✓", "Check dit".
+ * What the grades per vak do not say, as short chips: "€2,1k onder 12 vergelijkbare", "Check dit",
+ * "14 dagen online".
  */
 final class Reasons
 {
     /**
      * @param  object|null  $deal  a deal_scores row
-     * @param  array<string, int>  $scores  the match subscores
      * @return list<array{tekst: string, toon: string}> toon: good, bad, warn or info
      */
-    public static function chips(array $car, ?object $deal, array $scores, array $wensen): array
+    public static function chips(array $car, ?object $deal): array
     {
         $chips = [];
 
@@ -30,50 +29,6 @@ final class Reasons
                 $eur <= -500 => ['tekst' => self::thousands(-$eur)." boven {$n} vergelijkbare", 'toon' => 'bad'],
                 default => ['tekst' => "marktprijs ({$n} vergelijkbare)", 'toon' => 'info'],
             };
-        } elseif ($deal?->onbetrouwbaar ?? false) {
-            $chips[] = ['tekst' => 'dealscore onvoldoende betrouwbaar', 'toon' => 'info'];
-        } else {
-            $chips[] = ['tekst' => 'te weinig vergelijkbare', 'toon' => 'info'];
-        }
-
-        $weights = Wensen::weights($wensen);
-        $good = fn (string $wish, int $from = 75) => ($weights[$wish] ?? 0) > 0 && ($scores[$wish] ?? 0) >= $from;
-
-        if ($good('km')) {
-            $chips[] = ['tekst' => 'km ✓', 'toon' => 'good'];
-        }
-
-        // In the "iets ruimer" margin.
-        if (($car['kilometerstand'] ?? null) !== null && $car['kilometerstand'] > $wensen['eisen']['km_max']) {
-            $chips[] = ['tekst' => 'net boven km-grens', 'toon' => 'warn'];
-        }
-
-        if (($car['bouwjaar'] ?? null) !== null && $car['bouwjaar'] < $wensen['eisen']['bouwjaar_min']) {
-            $chips[] = ['tekst' => '1 jaar ouder dan gewenst', 'toon' => 'warn'];
-        }
-
-        if ($good('comfort', 100) && $car['comfort_niveau']) {
-            $chips[] = ['tekst' => "comfort {$car['comfort_niveau']} ✓", 'toon' => 'good'];
-        }
-
-        if ($good('pk', 100)) {
-            $chips[] = ['tekst' => 'pk ✓', 'toon' => 'good'];
-        }
-
-        if ($wensen['sport'] === 'ja' && $good('sport', 100)) {
-            $chips[] = ['tekst' => 'sport ✓', 'toon' => 'good'];
-        }
-
-        if (MatchScorer::isBrandDealer($car)) {
-            $chips[] = ['tekst' => $car['garantie'] === 'MERKGARANTIE' ? 'merkgarantie' : 'merkdealer', 'toon' => 'good'];
-        }
-
-        if (($wensen['modellen'] ?? []) !== [] && ($scores['model'] ?? 0) === 100) {
-            $chips[] = ['tekst' => 'favoriet model', 'toon' => 'good'];
-        }
-
-        if (($wensen['kleuren'] ?? []) !== [] && $good('kleur', 100)) {
-            $chips[] = ['tekst' => 'kleur ✓', 'toon' => 'good'];
         }
 
         if ($car['online_sinds']) {
