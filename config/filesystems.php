@@ -30,14 +30,6 @@ return [
 
     'disks' => [
 
-        // The NAS share, mounted at /backups in the containers (deploy/compose.prod.yml).
-        'backups' => [
-            'driver' => 'local',
-            'root' => env('BACKUP_PATH', '/backups'),
-            'throw' => false,
-            'report' => false,
-        ],
-
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

@@ -4,6 +4,10 @@ Fetches every page of the active Gaspedaal searches once a day and stores every 
 
 ## Deploying
 
+Every push to `main` deploys itself: `.github/workflows/deploy.yml` runs on a GitHub Actions runner on the server (`~/actions-runner-autotracker`, labels `self-hosted, autotracker`), brings `/srv/auto` to the pushed commit and runs `deploy/deploy.sh`. That script runs the tests, builds `auto:<commit>`, waits until the queue worker runs no job (`auto:idle`, at most an hour), dumps the database and migrates when migrations are pending, then makes it `auto:latest` and recreates the containers. When `/up` does not become healthy it puts the previous image back. Run it again from the Actions tab ("Run workflow"), or by hand: `deploy/deploy.sh`.
+
+The first setup, by hand:
+
 ```sh
 cd /srv/auto
 # once: docker volume create auto-storage && docker volume create auto-mysql   (already done)
@@ -22,7 +26,7 @@ The login is the app's own (name + password, "Ingelogd blijven" keeps you in). E
 - **Complete or not**: a run is `success` only when every page came in and at least 97% of `totalOccasions` was seen. Only then are cars it didn't see marked gone (`listing_source.gone_at`, and `listings.gone_at` once no source has the car). A run that is `incomplete` or `failed` keeps what it saw but marks nothing gone.
 - **Storage**: every raw page is stored gzipped under `storage/app/private/raw/<date>/source-<id>/` and listed in `scrape_pages`. The raw occasion JSON goes in `listing_snapshots`, stored again only when it changed. `observations` holds one row per car per day (price, km, snapshot_id), so "seen on day X" is simply that row.
 - **Monitoring**: the red banner on every page; `auto:health` every hour. Set `MONITOR_PUSH_URL` to an Uptime Kuma *push* monitor (heartbeat interval ~3600 s plus some slack). It then gets `up` or `down` with the reason, and Kuma alerts when the status is down or the pushes stop.
-- **Backup**: `auto:backup` at 03:30 writes a mysqldump to `/mnt/backups/auto` (kept 30 days) and copies new raw pages to `/mnt/backups/auto/raw`.
+- **Backup**: Backrest backs up the server. A deploy with pending migrations first dumps the database to `~/backups/auto-predeploy` (the last 10 are kept).
 
 ## Seller type, warranty, btw
 

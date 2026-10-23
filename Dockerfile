@@ -10,11 +10,6 @@ RUN install-php-extensions pdo_mysql opcache pcntl \
     && cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" \
     && echo "memory_limit=512M" > "$PHP_INI_DIR/conf.d/zz-auto.ini"
 
-# mysqldump for `php artisan auto:backup`.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends default-mysql-client \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # ---------- PHP dependencies, without the ones for development ----------
