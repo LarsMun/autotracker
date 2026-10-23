@@ -96,9 +96,6 @@ final class Ranking
                     'modellen' => $rows->filter(fn ($c) => $c['model'] !== null)->countBy('model')->sortKeys()
                         ->map(fn ($n, $model) => ['model' => $model, 'n' => $n])->values()->all(),
                 ])->values()->all(),
-            'bouwjaren' => $count('bouwjaar'),
-            'km' => collect($cars)->filter(fn ($c) => $c['kilometerstand'] !== null)->countBy(fn ($c) => MatchScorer::kmStep($c['kilometerstand']))->sortKeys()
-                ->map(fn ($n, $value) => ['value' => $value, 'n' => $n])->values()->all(),
             'luxe' => $count('comfort_niveau'),
             'kleuren' => $count('kleur'),
         ];

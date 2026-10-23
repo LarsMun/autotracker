@@ -37,12 +37,12 @@ final class MatchScorer
             $reasons[] = 'prijs buiten je range';
         }
 
-        if ($f['bouwjaren'] !== [] && ! in_array($car['bouwjaar'], $f['bouwjaren'], true)) {
-            $reasons[] = 'ander bouwjaar';
+        if ($outside($car['bouwjaar'], $f['bouwjaar_min'], $f['bouwjaar_max'])) {
+            $reasons[] = 'bouwjaar buiten je range';
         }
 
-        if ($f['km'] !== [] && ($car['kilometerstand'] === null || ! in_array(self::kmStep($car['kilometerstand']), $f['km'], true))) {
-            $reasons[] = 'andere kilometerstand';
+        if ($outside($car['kilometerstand'], $f['km_min'], $f['km_max'])) {
+            $reasons[] = 'km buiten je range';
         }
 
         if ($f['luxe'] !== [] && ! in_array($car['comfort_niveau'] ?? null, $f['luxe'], true)) {
@@ -133,12 +133,6 @@ final class MatchScorer
         }
 
         return round(max(1, min(10, 6 + 4 * ($value - $six) / ($ten - $six))), 1);
-    }
-
-    /** 27.500 km → 20000, the start of its step in the km filter. */
-    public static function kmStep(int $km): int
-    {
-        return intdiv($km, Wensen::KM_STAP) * Wensen::KM_STAP;
     }
 
     /**

@@ -119,7 +119,7 @@ class RecommendationTest extends TestCase
             ->has('ranking.data.0.cijfers', 5)
             ->has('ranking.data.0.chips')
             ->where('options.merken.0.merk', 'Volvo')
-            ->has('options.bouwjaren', 4)
+            ->has('options.luxe', 2)
             ->where('filters.merken', []));
 
         // Day two: car 3 drops €4.000 and becomes a good deal, not yet a "Check dit".
@@ -165,13 +165,13 @@ class RecommendationTest extends TestCase
         $this->assertSame([], Wensen::get()['filters']['modellen']);
         $this->assertSame([], $this->list());
 
-        // Price range, years, steps of km and comfort levels.
+        // Ranges of price, year and km, and comfort levels.
         $this->filters(['prijs_max' => 30000]);
         $this->assertSame(Listing::where('prijs', '<=', 30000)->orderBy('id')->pluck('id')->all(), collect($this->list())->sort()->values()->all());
-        $this->filters(['bouwjaren' => [2024, 2025]]);
+        $this->filters(['bouwjaar_min' => 2024, 'bouwjaar_max' => 2025]);
         $this->assertSame(Listing::whereIn('bouwjaar', [2024, 2025])->count(), count($this->list()));
-        $this->filters(['km' => [10000, 20000]]);
-        $this->assertSame(Listing::whereBetween('kilometerstand', [10000, 29999])->count(), count($this->list()));
+        $this->filters(['km_min' => 10000, 'km_max' => 30000]);
+        $this->assertSame(Listing::whereBetween('kilometerstand', [10000, 30000])->count(), count($this->list()));
         $this->filters(['luxe' => [2]]);
         $this->assertSame(Listing::where('comfort_niveau', 2)->count(), count($this->list()));
 
@@ -181,8 +181,8 @@ class RecommendationTest extends TestCase
         $this->filters(['kleuren' => ['ZWART', 'GRIJS']]);
         $this->assertCount(20, $this->list());
 
-        // Only steps of 10.000 km.
-        $this->filters(['km' => [15000]])->assertSessionHasErrors('km.0');
+        // Whole numbers only.
+        $this->filters(['km_max' => 'veel'])->assertSessionHasErrors('km_max');
 
         // Cleared: every car, in the same order as before.
         $this->filters([]);

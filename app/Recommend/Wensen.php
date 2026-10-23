@@ -14,7 +14,7 @@ final class Wensen
     public const string KEY = 'wensen';
 
     /** The stored layout; older ones are converted on reading. */
-    public const int VERSIE = 5;
+    public const int VERSIE = 6;
 
     /** The vakken of the rapportcijfer, in the order the pages show them. */
     public const array VAKKEN = ['deal', 'km', 'bouwjaar', 'luxe', 'vermogen'];
@@ -23,10 +23,10 @@ final class Wensen
     public const array BELANG = [0, 1, 3, 5];
 
     /** The filters that are lists; an empty one lets everything through. */
-    public const array LIJSTEN = ['merken', 'modellen', 'bouwjaren', 'km', 'luxe', 'kleuren'];
+    public const array LIJSTEN = ['merken', 'modellen', 'luxe', 'kleuren'];
 
-    /** The km filter selects whole steps: 20000 is 20.000–29.999 km. */
-    public const int KM_STAP = 10000;
+    /** The filters that are a range from–to; a bound that is null is not set. */
+    public const array BEREIKEN = ['prijs', 'bouwjaar', 'km', 'pk'];
 
     public static function defaults(): array
     {
@@ -39,9 +39,10 @@ final class Wensen
                 'modellen' => [],
                 'prijs_min' => null,
                 'prijs_max' => null,
-                'bouwjaren' => [],
-                // The start of each chosen step of KM_STAP km.
-                'km' => [],
+                'bouwjaar_min' => null,
+                'bouwjaar_max' => null,
+                'km_min' => null,
+                'km_max' => null,
                 // Comfort levels 1–3.
                 'luxe' => [],
                 // Only sport models.
@@ -126,7 +127,35 @@ final class Wensen
             $stored = self::upgradeTo5($stored);
         }
 
+        if ($stored['versie'] < 6) {
+            $stored = self::upgradeTo6($stored);
+        }
+
         return $stored;
+    }
+
+    /**
+     * Version 5 chose bouwjaren one by one and km in steps of 10.000; now both are a range. A list
+     * up to next year or a first step at 0 km was no bound on that side.
+     */
+    private static function upgradeTo6(array $stored): array
+    {
+        $f = $stored['filters'];
+        $years = $f['bouwjaren'];
+        $steps = $f['km'];
+        unset($f['bouwjaren'], $f['km']);
+
+        $ranges = [
+            'bouwjaar_min' => $years ? min($years) : null,
+            'bouwjaar_max' => $years && max($years) <= (int) date('Y') ? max($years) : null,
+            'km_min' => $steps && min($steps) > 0 ? min($steps) : null,
+            'km_max' => $steps ? max($steps) + 10000 : null,
+        ];
+
+        // In the order of defaults().
+        $order = array_keys(self::defaults()['filters']);
+
+        return ['versie' => 6, 'filters' => array_merge(array_flip($order), $f, $ranges), 'vakken' => $stored['vakken']];
     }
 
     /**
@@ -141,7 +170,7 @@ final class Wensen
         $kmMax = (int) $f['km_max'];
 
         return [
-            'versie' => self::VERSIE,
+            'versie' => 5,
             'filters' => [
                 'merken' => $f['merken'],
                 'modellen' => $f['modellen'],
@@ -150,7 +179,7 @@ final class Wensen
                 // Up to next year: Gaspedaal already lists some cars of next year's model.
                 'bouwjaren' => range((int) $f['bouwjaar_min'], max((int) $f['bouwjaar_min'], (int) date('Y') + 1)),
                 // Every step that starts below the maximum.
-                'km' => range(0, max(0, (int) (ceil($kmMax / self::KM_STAP) - 1) * self::KM_STAP), self::KM_STAP),
+                'km' => range(0, max(0, (int) (ceil($kmMax / 10000) - 1) * 10000), 10000),
                 'luxe' => [],
                 'sport' => $f['sport'] === 'ja',
                 'pk_min' => null,

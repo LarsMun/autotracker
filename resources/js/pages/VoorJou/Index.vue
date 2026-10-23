@@ -23,11 +23,11 @@ usePollWhileRunning(() => props.bijwerken, ['day', 'ranking', 'gewichten', 'opti
 const shownVakken = computed(() => vakken.filter((v) => props.gewichten[v] > 0).sort((a, b) => props.gewichten[b] - props.gewichten[a]))
 
 // ---------- The filters: stored with the wensen, the list follows a moment after the last change ----------
-const copy = (f) => ({ ...f, ...Object.fromEntries(['merken', 'modellen', 'bouwjaren', 'km', 'luxe', 'kleuren'].map((k) => [k, [...f[k]]])) })
+const copy = (f) => ({ ...f, ...Object.fromEntries(['merken', 'modellen', 'luxe', 'kleuren'].map((k) => [k, [...f[k]]])) })
 const f = reactive(copy(props.filters))
 
 // An empty number field is no bound.
-const payload = () => ({ ...f, ...Object.fromEntries(['prijs_min', 'prijs_max', 'pk_min', 'pk_max'].map((k) => [k, f[k] === '' || f[k] == null ? null : f[k]])) })
+const payload = () => ({ ...f, ...Object.fromEntries(['prijs_min', 'prijs_max', 'bouwjaar_min', 'bouwjaar_max', 'km_min', 'km_max', 'pk_min', 'pk_max'].map((k) => [k, f[k] === '' || f[k] == null ? null : f[k]])) })
 
 let timer = null
 watch(() => JSON.stringify(payload()), () => {
@@ -55,9 +55,12 @@ const modelOptions = computed(() => [...f.merken].sort().flatMap((merk) => {
     const gone = f.modellen.filter((v) => v.startsWith(`${merk}|`) && !known.some((m) => `${merk}|${m.model}` === v)).map((v) => ({ model: v.slice(merk.length + 1), n: 0 }))
     return [...known, ...gone].map((m) => ({ value: `${merk}|${m.model}`, label: m.model, n: m.n, group }))
 }))
-const kmLabel = (v) => `${num(v)} – ${num(v + 9999)} km`
-const jaarOptions = computed(() => withChosen(props.options.bouwjaren.map((o) => ({ value: o.value, label: String(o.value), n: o.n })), f.bouwjaren, String).reverse())
-const kmOptions = computed(() => withChosen(props.options.km.map((o) => ({ value: o.value, label: kmLabel(o.value), n: o.n })), f.km, kmLabel))
+// The ranges from–to, in the order of the bar.
+const ranges = [
+    ['prijs', 'Prijs (€)', 1000],
+    ['bouwjaar', 'Bouwjaar', 1],
+    ['km', 'Kilometers', 10000],
+]
 const luxeOptions = computed(() => [3, 2, 1].map((v) => ({ value: v, label: comfortLabel[v], n: props.options.luxe.find((o) => o.value === v)?.n ?? 0 })))
 const kleurOptions = computed(() => withChosen(props.options.kleuren.map((o) => ({ value: o.value, label: kleurLabel(o.value), n: o.n })), f.kleuren, kleurLabel))
 
@@ -92,16 +95,14 @@ const range = 'tabular w-24 rounded-md border border-stone-300 bg-white px-2 py-
                     <MultiSelect v-model="f.merken" label="Merk" :options="merkOptions" placeholder="Alle merken" />
                     <MultiSelect v-model="f.modellen" label="Model" :options="modelOptions" :disabled="!f.merken.length"
                                  :placeholder="f.merken.length ? 'Alle modellen' : 'Kies eerst een merk'" />
-                    <fieldset class="text-sm">
-                        <legend>Prijs (€)</legend>
+                    <fieldset v-for="[key, label, step] in ranges" :key="key" class="text-sm">
+                        <legend>{{ label }}</legend>
                         <div class="mt-1 flex items-center gap-1.5">
-                            <input id="f-prijs-min" v-model.number="f.prijs_min" type="number" min="0" step="1000" placeholder="van" :class="range" aria-label="Prijs vanaf" />
+                            <input :id="`f-${key}-min`" v-model.number="f[`${key}_min`]" type="number" min="0" :step="step" placeholder="van" :class="range" :aria-label="`${label} vanaf`" />
                             <span class="text-stone-400">–</span>
-                            <input id="f-prijs-max" v-model.number="f.prijs_max" type="number" min="0" step="1000" placeholder="tot" :class="range" aria-label="Prijs tot en met" />
+                            <input :id="`f-${key}-max`" v-model.number="f[`${key}_max`]" type="number" min="0" :step="step" placeholder="tot" :class="range" :aria-label="`${label} tot en met`" />
                         </div>
                     </fieldset>
-                    <MultiSelect v-model="f.bouwjaren" label="Bouwjaar" :options="jaarOptions" placeholder="Alle bouwjaren" />
-                    <MultiSelect v-model="f.km" label="Kilometers" :options="kmOptions" placeholder="Alle kilometerstanden" />
                     <MultiSelect v-model="f.luxe" label="Uitrusting" :options="luxeOptions" placeholder="Alle uitvoeringen" />
                     <fieldset class="text-sm">
                         <legend>Vermogen (pk)</legend>
