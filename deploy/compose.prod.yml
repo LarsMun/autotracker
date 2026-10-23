@@ -1,0 +1,126 @@
+# auto.munne.me in production, in /srv/auto.
+#
+#   docker compose --env-file .env -f deploy/compose.prod.yml up -d --build
+#
+# One image, three roles: the web app, the queue worker (runs the scrapes, one at a time) and the
+# scheduler. Traefik (an external stack on the `proxy` network) handles HTTPS and the login.
+# The values come from /srv/auto/.env; deploy/.env.prod.example lists them.
+
+name: auto
+
+x-app: &app
+    image: auto:latest
+    restart: unless-stopped
+    # The base image checks Caddy's admin port, which no service here opens.
+    healthcheck:
+        disable: true
+    env_file: ../.env
+    volumes:
+        # Raw pages, photos and caches survive a new image.
+        - auto-storage:/app/storage
+    depends_on:
+        mysql:
+            condition: service_healthy
+    networks:
+        - auto
+    labels:
+        - "project=auto"
+        - "environment=production"
+
+services:
+    app:
+        <<: *app
+        build:
+            context: ..
+            dockerfile: Dockerfile
+        networks:
+            - auto
+            - proxy
+        labels:
+            - "project=auto"
+            - "environment=production"
+            - "traefik.enable=true"
+            - "traefik.docker.network=proxy"
+
+            # HTTPS
+            - "traefik.http.routers.auto.rule=Host(`auto.munne.me`)"
+            - "traefik.http.routers.auto.entrypoints=websecure"
+            - "traefik.http.routers.auto.tls=true"
+            - "traefik.http.routers.auto.tls.certresolver=le"
+            - "traefik.http.routers.auto.middlewares=auto-security,security-headers@file"
+
+            # HTTP only redirects to HTTPS
+            - "traefik.http.routers.auto-http.rule=Host(`auto.munne.me`)"
+            - "traefik.http.routers.auto-http.entrypoints=web"
+            - "traefik.http.routers.auto-http.middlewares=auto-https"
+
+            # Middleware names are global in Traefik: prefixed, so they never mix with others.
+            - "traefik.http.middlewares.auto-https.redirectscheme.scheme=https"
+            - "traefik.http.middlewares.auto-https.redirectscheme.permanent=true"
+            - "traefik.http.middlewares.auto-security.headers.stsSeconds=31536000"
+            - "traefik.http.middlewares.auto-security.headers.stsIncludeSubdomains=true"
+            - "traefik.http.middlewares.auto-security.headers.customResponseHeaders.X-Robots-Tag=noindex, nofollow"
+
+            - "traefik.http.services.auto.loadbalancer.server.port=80"
+
+        healthcheck:
+            test: [ "CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost/up" ]
+            interval: 30s
+            timeout: 5s
+            start_period: 20s
+            retries: 3
+
+    queue:
+        <<: *app
+        # Built by app; never pulled from a registry.
+        pull_policy: never
+        # One worker: scrapes run one after the other, then photos. A recalculation after saving
+        # the wensen ("scores") goes first, but waits for a scrape that is already running. A run of the largest source
+        # takes some minutes; --timeout must stay above ScrapeSource::$timeout, and
+        # DB_QUEUE_RETRY_AFTER above that again.
+        command: [ "php", "artisan", "queue:work", "--queue=scores,scrape,photos,default", "--sleep=3", "--timeout=3100", "--memory=512" ]
+        stop_grace_period: 60s
+
+    scheduler:
+        <<: *app
+        pull_policy: never
+        command: [ "php", "artisan", "schedule:work" ]
+
+    mysql:
+        image: mysql:8.4
+        restart: unless-stopped
+        environment:
+            MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+            MYSQL_DATABASE: ${DB_DATABASE}
+            MYSQL_USER: ${DB_USERNAME}
+            MYSQL_PASSWORD: ${DB_PASSWORD}
+        volumes:
+            - auto-mysql:/var/lib/mysql
+        # No ports: only the containers above reach it.
+        networks:
+            - auto
+        healthcheck:
+            test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}" ]
+            interval: 10s
+            retries: 5
+            start_period: 30s
+        labels:
+            - "project=auto"
+            - "environment=production"
+
+networks:
+    proxy:
+        external: true
+    auto:
+        name: auto
+
+# Created once by hand, not by compose: they hold the data, so no compose command may remove
+# or relabel them. On a new server first:
+#   docker volume create auto-storage && docker volume create auto-mysql
+volumes:
+    auto-storage:
+        name: auto-storage
+        external: true
+    auto-mysql:
+        name: auto-mysql
+        external: true
